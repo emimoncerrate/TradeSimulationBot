@@ -6,6 +6,9 @@
   - Create requirements.txt with all necessary dependencies including slack_bolt, boto3, pytest, and development tools
   - Set up .env.example with all required environment variables and documentation
   - Create AWS SAM template.yaml for Lambda, API Gateway, and DynamoDB infrastructure
+  - Set up Docker configuration with Dockerfile for containerized development and deployment
+  - Create docker-compose.yml for local development with DynamoDB Local and other services
+  - Add Docker build and deployment scripts for AWS Lambda container deployment
   - _Requirements: 1.1, 8.3_
 
 - [ ] 2. Implement core data models and validation
