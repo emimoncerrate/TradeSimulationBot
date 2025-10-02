@@ -1,0 +1,519 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Jain Global Slack Trading Bot
+  
+  Serverless infrastructure for the Slack Trading Bot including Lambda function,
+  API Gateway, DynamoDB tables, and supporting AWS services.
+
+# =============================================================================
+# GLOBAL CONFIGURATION
+# =============================================================================
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.11
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !Ref LogLevel
+        DYNAMODB_TABLE_PREFIX: !Ref DynamoDBTablePrefix
+        AWS_REGION: !Ref AWS::Region
+
+# =============================================================================
+# PARAMETERS
+# =============================================================================
+Parameters:
+  Environment:
+    Type: String
+    Default: development
+    AllowedValues:
+      - development
+      - staging
+      - production
+    Description: Deployment environment
+  
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues:
+      - DEBUG
+      - INFO
+      - WARNING
+      - ERROR
+    Description: Application logging level
+  
+  DynamoDBTablePrefix:
+    Type: String
+    Default: jain-trading-bot
+    Description: Prefix for DynamoDB table names
+  
+  SlackBotToken:
+    Type: String
+    NoEcho: true
+    Description: Slack Bot User OAuth Token
+  
+  SlackSigningSecret:
+    Type: String
+    NoEcho: true
+    Description: Slack App Signing Secret
+  
+  FinnhubApiKey:
+    Type: String
+    NoEcho: true
+    Description: Finnhub API key for market data
+  
+  ApprovedChannels:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Comma-delimited list of approved Slack channel IDs
+  
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-sonnet-20240229-v1:0
+    Description: Amazon Bedrock model ID for AI risk analysis
+
+# =============================================================================
+# CONDITIONS
+# =============================================================================
+Conditions:
+  IsProduction: !Equals [!Ref Environment, production]
+  IsNotProduction: !Not [!Equals [!Ref Environment, production]]
+  EnableDetailedMonitoring: !Equals [!Ref Environment, production]
+
+# =============================================================================
+# RESOURCES
+# =============================================================================
+Resources:
+  
+  # ---------------------------------------------------------------------------
+  # LAMBDA FUNCTION
+  # ---------------------------------------------------------------------------
+  SlackTradingBotFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${DynamoDBTablePrefix}-lambda"
+      CodeUri: .
+      Handler: app.lambda_handler
+      Description: Jain Global Slack Trading Bot Lambda Function
+      
+      # Environment Variables
+      Environment:
+        Variables:
+          SLACK_BOT_TOKEN: !Ref SlackBotToken
+          SLACK_SIGNING_SECRET: !Ref SlackSigningSecret
+          FINNHUB_API_KEY: !Ref FinnhubApiKey
+          APPROVED_CHANNELS: !Join [",", !Ref ApprovedChannels]
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          TRADES_TABLE_NAME: !Ref TradesTable
+          POSITIONS_TABLE_NAME: !Ref PositionsTable
+          CHANNELS_TABLE_NAME: !Ref ChannelsTable
+      
+      # IAM Permissions
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TradesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PositionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChannelsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${DynamoDBTablePrefix}-lambda:*"
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+              Resource: !If
+                - IsProduction
+                - !GetAtt KMSKey.Arn
+                - !Ref AWS::NoValue
+      
+      # API Gateway Events
+      Events:
+        SlackEvents:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SlackTradingBotApi
+            Path: /slack/events
+            Method: post
+        SlackInteractive:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SlackTradingBotApi
+            Path: /slack/interactive
+            Method: post
+        SlackCommands:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SlackTradingBotApi
+            Path: /slack/commands
+            Method: post
+        HealthCheck:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SlackTradingBotApi
+            Path: /health
+            Method: get
+      
+      # Monitoring and Logging
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt DeadLetterQueue.Arn
+      
+      Tracing: Active
+      
+      Tags:
+        Environment: !Ref Environment
+        Application: JainTradingBot
+        Component: Lambda
+
+  # ---------------------------------------------------------------------------
+  # API GATEWAY
+  # ---------------------------------------------------------------------------
+  SlackTradingBotApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "${DynamoDBTablePrefix}-api"
+      StageName: !Ref Environment
+      Description: API Gateway for Jain Global Slack Trading Bot
+      
+      # CORS Configuration
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+      
+      # Throttling
+      ThrottleConfig:
+        RateLimit: 100
+        BurstLimit: 200
+      
+      # Request Validation
+      RequestValidatorId: !Ref ApiRequestValidator
+      
+      # Logging
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiGatewayLogGroup.Arn
+        Format: >
+          {
+            "requestId": "$context.requestId",
+            "ip": "$context.identity.sourceIp",
+            "caller": "$context.identity.caller",
+            "user": "$context.identity.user",
+            "requestTime": "$context.requestTime",
+            "httpMethod": "$context.httpMethod",
+            "resourcePath": "$context.resourcePath",
+            "status": "$context.status",
+            "protocol": "$context.protocol",
+            "responseLength": "$context.responseLength",
+            "responseTime": "$context.responseTime",
+            "error": "$context.error.message",
+            "integrationError": "$context.integration.error"
+          }
+      
+      Tags:
+        Environment: !Ref Environment
+        Application: JainTradingBot
+        Component: ApiGateway
+
+  ApiRequestValidator:
+    Type: AWS::ApiGateway::RequestValidator
+    Properties:
+      RestApiId: !Ref SlackTradingBotApi
+      ValidateRequestBody: true
+      ValidateRequestParameters: true
+
+  # ---------------------------------------------------------------------------
+  # DYNAMODB TABLES
+  # ---------------------------------------------------------------------------
+  TradesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${DynamoDBTablePrefix}-trades"
+      BillingMode: PAY_PER_REQUEST
+      
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: trade_id
+          AttributeType: S
+        - AttributeName: symbol
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: trade_id
+          KeyType: RANGE
+      
+      GlobalSecondaryIndexes:
+        - IndexName: symbol-timestamp-index
+          KeySchema:
+            - AttributeName: symbol
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProduction, true, false]
+      
+      SSESpecification:
+        SSEEnabled: true
+        KMSMasterKeyId: !If
+          - IsProduction
+          - !Ref KMSKey
+          - !Ref AWS::NoValue
+      
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: JainTradingBot
+        - Key: Component
+          Value: Database
+
+  PositionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${DynamoDBTablePrefix}-positions"
+      BillingMode: PAY_PER_REQUEST
+      
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: symbol
+          AttributeType: S
+      
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: symbol
+          KeyType: RANGE
+      
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProduction, true, false]
+      
+      SSESpecification:
+        SSEEnabled: true
+        KMSMasterKeyId: !If
+          - IsProduction
+          - !Ref KMSKey
+          - !Ref AWS::NoValue
+      
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: JainTradingBot
+        - Key: Component
+          Value: Database
+
+  ChannelsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${DynamoDBTablePrefix}-channels"
+      BillingMode: PAY_PER_REQUEST
+      
+      AttributeDefinitions:
+        - AttributeName: channel_id
+          AttributeType: S
+      
+      KeySchema:
+        - AttributeName: channel_id
+          KeyType: HASH
+      
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProduction, true, false]
+      
+      SSESpecification:
+        SSEEnabled: true
+        KMSMasterKeyId: !If
+          - IsProduction
+          - !Ref KMSKey
+          - !Ref AWS::NoValue
+      
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: JainTradingBot
+        - Key: Component
+          Value: Database
+
+  # ---------------------------------------------------------------------------
+  # SECURITY AND ENCRYPTION
+  # ---------------------------------------------------------------------------
+  KMSKey:
+    Type: AWS::KMS::Key
+    Condition: IsProduction
+    Properties:
+      Description: KMS key for Jain Trading Bot data encryption
+      KeyPolicy:
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: Allow Lambda Function
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt SlackTradingBotFunctionRole.Arn
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: "*"
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: JainTradingBot
+        - Key: Component
+          Value: Security
+
+  KMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Condition: IsProduction
+    Properties:
+      AliasName: !Sub "alias/${DynamoDBTablePrefix}-key"
+      TargetKeyId: !Ref KMSKey
+
+  # ---------------------------------------------------------------------------
+  # MONITORING AND LOGGING
+  # ---------------------------------------------------------------------------
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${DynamoDBTablePrefix}-api"
+      RetentionInDays: !If [IsProduction, 365, 30]
+
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${DynamoDBTablePrefix}-lambda"
+      RetentionInDays: !If [IsProduction, 365, 30]
+
+  # CloudWatch Alarms
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EnableDetailedMonitoring
+    Properties:
+      AlarmName: !Sub "${DynamoDBTablePrefix}-lambda-errors"
+      AlarmDescription: Lambda function error rate alarm
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SlackTradingBotFunction
+
+  ApiGateway5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EnableDetailedMonitoring
+    Properties:
+      AlarmName: !Sub "${DynamoDBTablePrefix}-api-5xx-errors"
+      AlarmDescription: API Gateway 5xx error rate alarm
+      MetricName: 5XXError
+      Namespace: AWS/ApiGateway
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ApiName
+          Value: !Ref SlackTradingBotApi
+
+  # ---------------------------------------------------------------------------
+  # ERROR HANDLING
+  # ---------------------------------------------------------------------------
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${DynamoDBTablePrefix}-dlq"
+      MessageRetentionPeriod: 1209600  # 14 days
+      VisibilityTimeoutSeconds: 60
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: JainTradingBot
+        - Key: Component
+          Value: ErrorHandling
+
+# =============================================================================
+# OUTPUTS
+# =============================================================================
+Outputs:
+  ApiGatewayUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${SlackTradingBotApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiUrl"
+  
+  LambdaFunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt SlackTradingBotFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaArn"
+  
+  TradesTableName:
+    Description: DynamoDB trades table name
+    Value: !Ref TradesTable
+    Export:
+      Name: !Sub "${AWS::StackName}-TradesTable"
+  
+  PositionsTableName:
+    Description: DynamoDB positions table name
+    Value: !Ref PositionsTable
+    Export:
+      Name: !Sub "${AWS::StackName}-PositionsTable"
+  
+  ChannelsTableName:
+    Description: DynamoDB channels table name
+    Value: !Ref ChannelsTable
+    Export:
+      Name: !Sub "${AWS::StackName}-ChannelsTable"
+  
+  KMSKeyId:
+    Condition: IsProduction
+    Description: KMS key ID for encryption
+    Value: !Ref KMSKey
+    Export:
+      Name: !Sub "${AWS::StackName}-KMSKey"
+  
+  DeadLetterQueueUrl:
+    Description: Dead letter queue URL
+    Value: !Ref DeadLetterQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-DLQUrl"

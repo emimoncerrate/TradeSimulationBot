@@ -1,74 +1,262 @@
-# Slack Trading Bot for Jain Global
+# Jain Global Slack Trading Bot
 
-A sophisticated Slack bot that enables internal traders, analysts, and Portfolio Managers to simulate trades directly within Slack. This professional-grade "command center" replaces cumbersome mobile web applications with a fast, secure, mobile-first workflow for investment decisions.
+A sophisticated Slack-based trading simulation bot for Jain Global investment management firm. This bot enables traders, analysts, and Portfolio Managers to simulate trades directly within Slack with AI-powered risk analysis and comprehensive portfolio tracking.
 
-## Key Features
+## 🚀 Features
 
-- **Slash Command Trading**: Initiate trades with `/trade` command in approved private channels
-- **AI-Powered Risk Analysis**: Real-time risk assessment using Amazon Bedrock Claude
-- **Interactive Trade Widget**: Intuitive Block Kit modal for trade entry and confirmation
-- **High-Risk Confirmation**: Enhanced security for high-risk trades with Portfolio Manager notifications
-- **Portfolio Dashboard**: Personalized App Home tab with positions and P&L tracking
-- **Role-Based Workflows**: Customized experiences for Research Analysts, Portfolio Managers, and Execution Traders
-- **Market Data Integration**: Real-time pricing via Finnhub API
-- **Secure Execution**: Proxy API integration with mock trading system
-- **Comprehensive Audit Trail**: Full compliance logging and position tracking
+- **Slash Command Trading**: Initiate trades with `/trade` command
+- **AI Risk Analysis**: Amazon Bedrock Claude integration for trade risk assessment
+- **Portfolio Dashboard**: Real-time portfolio tracking in Slack App Home
+- **Role-Based Access**: Different workflows for Research Analysts, Portfolio Managers, and Execution Traders
+- **Market Data Integration**: Real-time market data from Finnhub API
+- **Secure Architecture**: Channel restrictions, audit logging, and compliance features
+- **Serverless Deployment**: AWS Lambda with DynamoDB and API Gateway
 
-## Architecture
+## 🏗️ Architecture
 
-- **Framework**: Python 3.11+ with Slack Bolt
-- **Deployment**: AWS Serverless (Lambda, API Gateway, DynamoDB)
-- **AI Service**: Amazon Bedrock (Claude model)
-- **Market Data**: Finnhub API
-- **Database**: DynamoDB with encryption at rest
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Slack Client  │───▶│   API Gateway   │───▶│  Lambda Function │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                                                        │
+                       ┌─────────────────┐             │
+                       │   Amazon        │◀────────────┤
+                       │   Bedrock       │             │
+                       └─────────────────┘             │
+                                                        │
+                       ┌─────────────────┐             │
+                       │   DynamoDB      │◀────────────┤
+                       │   Tables        │             │
+                       └─────────────────┘             │
+                                                        │
+                       ┌─────────────────┐             │
+                       │   Finnhub API   │◀────────────┘
+                       └─────────────────┘
+```
 
-## Project Documentation
+## 📋 Prerequisites
 
-This project follows Kiro's spec-driven development methodology with comprehensive documentation:
+- Python 3.11+
+- Docker and Docker Compose
+- AWS CLI configured
+- AWS SAM CLI
+- Slack workspace with admin permissions
 
-### 📋 [Requirements Document](.kiro/specs/slack-trading-bot/requirements.md)
+## 🛠️ Quick Start
 
-Detailed user stories and acceptance criteria covering all 10 core requirements:
+### 1. Clone and Setup
 
-- Slash command initiation and channel restrictions
-- Interactive trade widget and AI risk analysis
-- High-risk confirmation workflows and secure execution
-- Persistent data tracking and portfolio dashboard
-- Role-based user workflows and market data integration
+```bash
+git clone <repository-url>
+cd slack-trading-bot
+```
 
-### 🏗️ [Design Document](.kiro/specs/slack-trading-bot/design.md)
+### 2. Environment Configuration
 
-Comprehensive technical architecture and implementation specifications:
+```bash
+# Copy environment template
+cp .env.example .env
 
-- Serverless AWS architecture with security design
-- Component interfaces and data models
-- Error handling strategies and testing framework
-- Code organization standards (300-400 lines per file minimum)
+# Edit .env with your configuration
+# Required variables:
+# - SLACK_BOT_TOKEN
+# - SLACK_SIGNING_SECRET  
+# - FINNHUB_API_KEY
+# - APPROVED_CHANNELS
+```
 
-### ✅ [Implementation Tasks](.kiro/specs/slack-trading-bot/tasks.md)
+### 3. Local Development with Docker
 
-Actionable coding tasks with comprehensive testing requirements:
+```bash
+# Start all services
+docker-compose up -d
 
-- 10 major implementation phases with detailed subtasks
-- Foundation setup through deployment and infrastructure
-- Mandatory unit testing and security validation
-- Requirements mapping for full traceability
+# View logs
+docker-compose logs -f slack-trading-bot
 
-## Getting Started
+# Access services:
+# - Main App: http://localhost:3000
+# - DynamoDB Admin: http://localhost:8001
+# - Redis Commander: http://localhost:8002
+# - Prometheus: http://localhost:9090
+# - Grafana: http://localhost:3001
+```
 
-1. Review the [requirements document](.kiro/specs/slack-trading-bot/requirements.md) to understand the feature scope
-2. Study the [design document](.kiro/specs/slack-trading-bot/design.md) for technical architecture
-3. Begin implementation by opening [tasks.md](.kiro/specs/slack-trading-bot/tasks.md) and clicking "Start task" on any task item
+### 4. Local Development without Docker
 
-## Development Workflow
+```bash
+# Install dependencies
+pip install -r requirements.txt
 
-- Each implementation file should contain 300-400+ lines of comprehensive code
-- Run `npm run test` after implementing each layer/component
-- All tests must pass before proceeding to the next implementation phase
-- Follow test-driven development with mandatory unit testing
+# Run the application
+python app.py
+```
 
-## Target Users
+## 🚀 Deployment
 
-- **Research Analysts**: Rapid idea testing and proposal generation
-- **Portfolio Managers**: Risk analysis and final trade decisions
-- **Execution Traders**: Clear trade instructions and market execution
+### AWS Lambda Deployment
+
+```bash
+# Build and deploy to development
+./scripts/deploy-lambda.sh deploy --environment development --guided
+
+# Deploy to production
+./scripts/deploy-lambda.sh deploy --environment production --s3-bucket your-deployment-bucket
+```
+
+### Docker Container Deployment
+
+```bash
+# Build production image
+./scripts/docker-build.sh production --tag v1.0.0
+
+# Build and push to ECR
+./scripts/docker-build.sh lambda --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com --push
+```
+
+## 📁 Project Structure
+
+```
+├── app.py                 # Main application entry point
+├── config/
+│   └── settings.py        # Configuration management
+├── listeners/
+│   ├── commands.py        # Slash command handlers
+│   ├── actions.py         # Interactive component handlers
+│   └── events.py          # Slack event handlers
+├── services/              # Business logic services
+├── models/                # Data models
+├── ui/                    # Slack UI components
+├── utils/                 # Utility functions
+├── scripts/               # Deployment and build scripts
+├── template.yaml          # AWS SAM template
+├── docker-compose.yml     # Local development environment
+└── requirements.txt       # Python dependencies
+```
+
+## 🔧 Configuration
+
+### Environment Variables
+
+Key environment variables (see `.env.example` for complete list):
+
+```bash
+# Application
+ENVIRONMENT=development
+LOG_LEVEL=INFO
+DEBUG_MODE=true
+
+# Slack
+SLACK_BOT_TOKEN=xoxb-your-token
+SLACK_SIGNING_SECRET=your-secret
+SLACK_APP_TOKEN=xapp-your-token  # For Socket Mode
+
+# AWS
+AWS_REGION=us-east-1
+DYNAMODB_TABLE_PREFIX=jain-trading-bot
+
+# Market Data
+FINNHUB_API_KEY=your-api-key
+
+# Security
+APPROVED_CHANNELS=C1234567890,C0987654321
+```
+
+### Slack App Configuration
+
+1. Create a new Slack app at https://api.slack.com/apps
+2. Configure OAuth scopes:
+   - `chat:write`
+   - `commands`
+   - `im:history`
+   - `channels:read`
+   - `users:read`
+3. Add slash command: `/trade`
+4. Enable Interactive Components
+5. Configure App Home tab
+6. Install app to workspace
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=. --cov-report=html
+
+# Run specific test file
+pytest tests/test_config.py -v
+
+# Run tests in Docker
+docker-compose run --rm slack-trading-bot pytest
+```
+
+## 📊 Monitoring
+
+### Local Development
+
+- **Application Logs**: `docker-compose logs -f slack-trading-bot`
+- **Prometheus Metrics**: http://localhost:9090
+- **Grafana Dashboard**: http://localhost:3001 (admin/admin)
+- **Jaeger Tracing**: http://localhost:16686
+
+### Production
+
+- **CloudWatch Logs**: `/aws/lambda/jain-trading-bot-lambda`
+- **CloudWatch Metrics**: Custom metrics namespace `JainTradingBot`
+- **X-Ray Tracing**: Enabled for Lambda function
+
+## 🔒 Security
+
+- **Channel Restrictions**: Bot only works in approved private channels
+- **Role-Based Access**: Different permissions for analysts, PMs, and traders
+- **Audit Logging**: All trading activities logged for compliance
+- **Data Encryption**: DynamoDB encryption at rest with KMS
+- **Network Security**: VPC deployment with security groups
+
+## 📚 API Documentation
+
+### Slack Commands
+
+- `/trade` - Initiate a new trade simulation
+
+### Interactive Components
+
+- Trade Modal - Input trade parameters
+- Risk Analysis - AI-powered risk assessment
+- Portfolio Dashboard - View positions and P&L
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/new-feature`
+3. Make changes and add tests
+4. Run tests: `pytest`
+5. Commit changes: `git commit -am 'Add new feature'`
+6. Push to branch: `git push origin feature/new-feature`
+7. Submit a Pull Request
+
+## 📄 License
+
+This project is proprietary software owned by Jain Global. All rights reserved.
+
+## 🆘 Support
+
+For support and questions:
+
+- Internal Documentation: [Confluence Link]
+- Slack Channel: #trading-bot-support
+- Email: trading-tech@jainglobal.com
+
+## 🔄 Changelog
+
+### v1.0.0 (Current)
+- Initial release with core trading functionality
+- AI-powered risk analysis
+- Portfolio dashboard
+- AWS Lambda deployment
+
+---
+
+**Note**: This is the foundation implementation. Additional features will be added in subsequent tasks according to the implementation plan.
