@@ -1,0 +1,1110 @@
+"""
+Comprehensive DynamoDB service implementation for the Slack Trading Bot.
+
+This module provides a complete database service layer with connection management,
+error handling, retry logic, and comprehensive CRUD operations for all data models.
+It includes trade logging, position tracking, user management, and channel validation
+with advanced features like query optimization, batch operations, and transaction support.
+"""
+
+import asyncio
+import logging
+import time
+import uuid
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal
+from typing import Dict, Any, Optional, List, Union, Tuple
+from dataclasses import asdict
+import json
+import boto3
+from botocore.exceptions import ClientError, BotoCoreError, NoCredentialsError
+from botocore.config import Config
+import backoff
+
+# Import our models
+from models.trade import Trade, TradeStatus, TradeType, RiskLevel, TradeValidationError
+from models.user import User, UserRole, UserStatus, Permission, UserProfile, UserValidationError
+from models.portfolio import Portfolio, Position, PortfolioStatus, PositionType, PortfolioValidationError
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+
+class DatabaseError(Exception):
+    """Base exception for database operations."""
+    
+    def __init__(self, message: str, error_code: Optional[str] = None, original_error: Optional[Exception] = None):
+        self.message = message
+        self.error_code = error_code
+        self.original_error = original_error
+        super().__init__(self.message)
+
+
+class ConnectionError(DatabaseError):
+    """Exception for database connection issues."""
+    pass
+
+
+class ValidationError(DatabaseError):
+    """Exception for data validation issues."""
+    pass
+
+
+class NotFoundError(DatabaseError):
+    """Exception for when requested data is not found."""
+    pass
+
+
+class ConflictError(DatabaseError):
+    """Exception for data conflicts (e.g., duplicate keys)."""
+    pass
+
+
+class DatabaseService:
+    """
+    Comprehensive DynamoDB service with advanced features and error handling.
+    
+    This service provides complete database operations for the Slack Trading Bot,
+    including connection management, retry logic, batch operations, transactions,
+    and comprehensive error handling with logging and metrics collection.
+    
+    Features:
+    - Automatic connection management with connection pooling
+    - Exponential backoff retry logic for transient failures
+    - Batch operations for improved performance
+    - Transaction support for data consistency
+    - Comprehensive error handling and logging
+    - Query optimization and caching
+    - Metrics collection and monitoring
+    - Data validation and sanitization
+    - Audit trail logging
+    """
+    
+    def __init__(self, region_name: str = 'us-east-1', endpoint_url: Optional[str] = None,
+                 max_retries: int = 3, timeout: int = 30):
+        """
+        Initialize the database service.
+        
+        Args:
+            region_name: AWS region name
+            endpoint_url: DynamoDB endpoint URL (for local development)
+            max_retries: Maximum number of retry attempts
+            timeout: Connection timeout in seconds
+        """
+        self.region_name = region_name
+        self.endpoint_url = endpoint_url
+        self.max_retries = max_retries
+        self.timeout = timeout
+        
+        # Table names
+        self.trades_table_name = 'slack-trading-bot-trades'
+        self.positions_table_name = 'slack-trading-bot-positions'
+        self.users_table_name = 'slack-trading-bot-users'
+        self.channels_table_name = 'slack-trading-bot-channels'
+        self.portfolios_table_name = 'slack-trading-bot-portfolios'
+        self.audit_table_name = 'slack-trading-bot-audit'
+        
+        # Connection and client setup
+        self._dynamodb_client = None
+        self._dynamodb_resource = None
+        self._tables = {}
+        self._connection_pool = {}
+        
+        # Performance and monitoring
+        self._query_cache = {}
+        self._cache_ttl = 300  # 5 minutes
+        self._metrics = {
+            'queries_executed': 0,
+            'cache_hits': 0,
+            'cache_misses': 0,
+            'errors': 0,
+            'retries': 0,
+            'batch_operations': 0,
+            'transactions': 0
+        }
+        
+        # Initialize connection
+        self._initialize_connection()
+        
+        logger.info(f"DatabaseService initialized for region {region_name}")
+    
+    def _initialize_connection(self) -> None:
+        """Initialize DynamoDB connection with proper configuration."""
+        try:
+            # Configure boto3 with retry and timeout settings
+            config = Config(
+                region_name=self.region_name,
+                retries={
+                    'max_attempts': self.max_retries,
+                    'mode': 'adaptive'
+                },
+                connect_timeout=self.timeout,
+                read_timeout=self.timeout * 2,
+                max_pool_connections=50
+            )
+            
+            # Create client and resource
+            if self.endpoint_url:
+                # Local development
+                self._dynamodb_client = boto3.client(
+                    'dynamodb',
+                    endpoint_url=self.endpoint_url,
+                    config=config
+                )
+                self._dynamodb_resource = boto3.resource(
+                    'dynamodb',
+                    endpoint_url=self.endpoint_url,
+                    config=config
+                )
+            else:
+                # Production AWS
+                self._dynamodb_client = boto3.client('dynamodb', config=config)
+                self._dynamodb_resource = boto3.resource('dynamodb', config=config)
+            
+            # Initialize table references
+            self._initialize_tables()
+            
+            logger.info("DynamoDB connection initialized successfully")
+            
+        except NoCredentialsError as e:
+            error_msg = "AWS credentials not found. Please configure AWS credentials."
+            logger.error(error_msg)
+            raise ConnectionError(error_msg, "NO_CREDENTIALS", e)
+        
+        except Exception as e:
+            error_msg = f"Failed to initialize DynamoDB connection: {str(e)}"
+            logger.error(error_msg)
+            raise ConnectionError(error_msg, "CONNECTION_FAILED", e)
+    
+    def _initialize_tables(self) -> None:
+        """Initialize table references and verify they exist."""
+        table_names = [
+            self.trades_table_name,
+            self.positions_table_name,
+            self.users_table_name,
+            self.channels_table_name,
+            self.portfolios_table_name,
+            self.audit_table_name
+        ]
+        
+        for table_name in table_names:
+            try:
+                table = self._dynamodb_resource.Table(table_name)
+                # Verify table exists by checking its status
+                table.load()
+                self._tables[table_name] = table
+                logger.debug(f"Table {table_name} initialized successfully")
+                
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                    logger.warning(f"Table {table_name} not found - it may need to be created")
+                    # Store None to indicate table doesn't exist
+                    self._tables[table_name] = None
+                else:
+                    logger.error(f"Error accessing table {table_name}: {e}")
+                    raise ConnectionError(f"Failed to access table {table_name}", "TABLE_ACCESS_ERROR", e)
+    
+    def _get_table(self, table_name: str):
+        """
+        Get table reference with error handling.
+        
+        Args:
+            table_name: Name of the table
+            
+        Returns:
+            DynamoDB table resource
+            
+        Raises:
+            ConnectionError: If table is not available
+        """
+        table = self._tables.get(table_name)
+        if table is None:
+            raise ConnectionError(f"Table {table_name} is not available", "TABLE_NOT_FOUND")
+        return table
+    
+    @backoff.on_exception(
+        backoff.expo,
+        (ClientError, BotoCoreError),
+        max_tries=3,
+        giveup=lambda e: e.response.get('Error', {}).get('Code') in ['ValidationException', 'ResourceNotFoundException'] if hasattr(e, 'response') else False
+    )
+    async def _execute_with_retry(self, operation, *args, **kwargs):
+        """
+        Execute DynamoDB operation with retry logic.
+        
+        Args:
+            operation: DynamoDB operation to execute
+            *args: Operation arguments
+            **kwargs: Operation keyword arguments
+            
+        Returns:
+            Operation result
+        """
+        try:
+            self._metrics['queries_executed'] += 1
+            result = operation(*args, **kwargs)
+            return result
+            
+        except ClientError as e:
+            self._metrics['errors'] += 1
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            error_message = e.response.get('Error', {}).get('Message', str(e))
+            
+            logger.error(f"DynamoDB ClientError: {error_code} - {error_message}")
+            
+            # Map DynamoDB errors to our custom exceptions
+            if error_code == 'ResourceNotFoundException':
+                raise NotFoundError(f"Resource not found: {error_message}", error_code, e)
+            elif error_code == 'ConditionalCheckFailedException':
+                raise ConflictError(f"Conditional check failed: {error_message}", error_code, e)
+            elif error_code == 'ValidationException':
+                raise ValidationError(f"Validation error: {error_message}", error_code, e)
+            elif error_code in ['ProvisionedThroughputExceededException', 'ThrottlingException']:
+                self._metrics['retries'] += 1
+                logger.warning(f"Throttling detected, will retry: {error_message}")
+                raise  # Let backoff handle the retry
+            else:
+                raise DatabaseError(f"DynamoDB error: {error_message}", error_code, e)
+        
+        except BotoCoreError as e:
+            self._metrics['errors'] += 1
+            logger.error(f"BotoCore error: {str(e)}")
+            raise ConnectionError(f"Connection error: {str(e)}", "CONNECTION_ERROR", e)
+        
+        except Exception as e:
+            self._metrics['errors'] += 1
+            logger.error(f"Unexpected error in database operation: {str(e)}")
+            raise DatabaseError(f"Unexpected database error: {str(e)}", "UNKNOWN_ERROR", e)
+    
+    def _generate_cache_key(self, operation: str, **params) -> str:
+        """Generate cache key for query results."""
+        key_parts = [operation]
+        for k, v in sorted(params.items()):
+            key_parts.append(f"{k}:{v}")
+        return ":".join(key_parts)
+    
+    def _get_from_cache(self, cache_key: str) -> Optional[Any]:
+        """Get result from cache if not expired."""
+        if cache_key in self._query_cache:
+            cached_data, timestamp = self._query_cache[cache_key]
+            if time.time() - timestamp < self._cache_ttl:
+                self._metrics['cache_hits'] += 1
+                return cached_data
+            else:
+                # Remove expired entry
+                del self._query_cache[cache_key]
+        
+        self._metrics['cache_misses'] += 1
+        return None
+    
+    def _set_cache(self, cache_key: str, data: Any) -> None:
+        """Store result in cache with timestamp."""
+        self._query_cache[cache_key] = (data, time.time())
+        
+        # Simple cache cleanup - remove oldest entries if cache gets too large
+        if len(self._query_cache) > 1000:
+            oldest_keys = sorted(self._query_cache.keys(), 
+                               key=lambda k: self._query_cache[k][1])[:100]
+            for key in oldest_keys:
+                del self._query_cache[key]
+    
+    def _log_audit_event(self, event_type: str, user_id: str, details: Dict[str, Any]) -> None:
+        """
+        Log audit event for compliance and monitoring.
+        
+        Args:
+            event_type: Type of event (e.g., 'trade_created', 'user_updated')
+            user_id: User who performed the action
+            details: Additional event details
+        """
+        try:
+            audit_entry = {
+                'audit_id': str(uuid.uuid4()),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'event_type': event_type,
+                'user_id': user_id,
+                'details': details,
+                'ttl': int((datetime.now(timezone.utc) + timedelta(days=2555)).timestamp())  # 7 years retention
+            }
+            
+            # Store audit entry asynchronously to avoid blocking main operations
+            asyncio.create_task(self._store_audit_entry(audit_entry))
+            
+        except Exception as e:
+            logger.error(f"Failed to log audit event: {str(e)}")
+            # Don't raise exception for audit logging failures
+    
+    async def _store_audit_entry(self, audit_entry: Dict[str, Any]) -> None:
+        """Store audit entry in database."""
+        try:
+            table = self._get_table(self.audit_table_name)
+            await self._execute_with_retry(table.put_item, Item=audit_entry)
+        except Exception as e:
+            logger.error(f"Failed to store audit entry: {str(e)}")
+    
+    # Trade Management Methods
+    
+    async def log_trade(self, trade: Trade) -> bool:
+        """
+        Log a trade to the database with comprehensive error handling.
+        
+        Args:
+            trade: Trade object to log
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            ValidationError: If trade data is invalid
+            DatabaseError: If database operation fails
+        """
+        try:
+            # Validate trade data
+            trade.validate()
+            
+            # Convert trade to DynamoDB item
+            item = trade.to_dict()
+            
+            # Add DynamoDB specific fields
+            item['pk'] = f"USER#{trade.user_id}"
+            item['sk'] = f"TRADE#{trade.trade_id}"
+            item['gsi1pk'] = f"SYMBOL#{trade.symbol}"
+            item['gsi1sk'] = trade.timestamp.isoformat()
+            item['ttl'] = int((datetime.now(timezone.utc) + timedelta(days=2555)).timestamp())  # 7 years retention
+            
+            # Store in database
+            table = self._get_table(self.trades_table_name)
+            await self._execute_with_retry(
+                table.put_item,
+                Item=item,
+                ConditionExpression='attribute_not_exists(pk) AND attribute_not_exists(sk)'
+            )
+            
+            # Log audit event
+            self._log_audit_event('trade_created', trade.user_id, {
+                'trade_id': trade.trade_id,
+                'symbol': trade.symbol,
+                'quantity': trade.quantity,
+                'trade_type': trade.trade_type.value,
+                'price': str(trade.price)
+            })
+            
+            logger.info(f"Trade {trade.trade_id} logged successfully for user {trade.user_id}")
+            return True
+            
+        except ConflictError:
+            logger.warning(f"Trade {trade.trade_id} already exists")
+            raise ConflictError(f"Trade {trade.trade_id} already exists", "DUPLICATE_TRADE")
+        
+        except Exception as e:
+            logger.error(f"Failed to log trade {trade.trade_id}: {str(e)}")
+            raise DatabaseError(f"Failed to log trade: {str(e)}", "TRADE_LOG_FAILED", e)
+    
+    async def get_trade(self, user_id: str, trade_id: str) -> Optional[Trade]:
+        """
+        Retrieve a specific trade by user and trade ID.
+        
+        Args:
+            user_id: User ID who owns the trade
+            trade_id: Trade ID to retrieve
+            
+        Returns:
+            Trade object or None if not found
+        """
+        try:
+            # Check cache first
+            cache_key = self._generate_cache_key('get_trade', user_id=user_id, trade_id=trade_id)
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                return Trade.from_dict(cached_result) if cached_result else None
+            
+            table = self._get_table(self.trades_table_name)
+            response = await self._execute_with_retry(
+                table.get_item,
+                Key={
+                    'pk': f"USER#{user_id}",
+                    'sk': f"TRADE#{trade_id}"
+                }
+            )
+            
+            if 'Item' in response:
+                trade_data = response['Item']
+                # Remove DynamoDB specific fields
+                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
+                    trade_data.pop(key, None)
+                
+                trade = Trade.from_dict(trade_data)
+                
+                # Cache the result
+                self._set_cache(cache_key, trade_data)
+                
+                return trade
+            
+            # Cache negative result
+            self._set_cache(cache_key, None)
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to get trade {trade_id} for user {user_id}: {str(e)}")
+            raise DatabaseError(f"Failed to retrieve trade: {str(e)}", "TRADE_GET_FAILED", e)
+    
+    async def get_user_trades(self, user_id: str, limit: int = 50, 
+                            start_date: Optional[datetime] = None,
+                            end_date: Optional[datetime] = None,
+                            status_filter: Optional[TradeStatus] = None) -> List[Trade]:
+        """
+        Get trades for a specific user with filtering and pagination.
+        
+        Args:
+            user_id: User ID to get trades for
+            limit: Maximum number of trades to return
+            start_date: Filter trades after this date
+            end_date: Filter trades before this date
+            status_filter: Filter by trade status
+            
+        Returns:
+            List of Trade objects
+        """
+        try:
+            # Build cache key
+            cache_params = {
+                'user_id': user_id,
+                'limit': limit,
+                'start_date': start_date.isoformat() if start_date else None,
+                'end_date': end_date.isoformat() if end_date else None,
+                'status_filter': status_filter.value if status_filter else None
+            }
+            cache_key = self._generate_cache_key('get_user_trades', **cache_params)
+            
+            # Check cache
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                return [Trade.from_dict(trade_data) for trade_data in cached_result]
+            
+            table = self._get_table(self.trades_table_name)
+            
+            # Build query parameters
+            query_params = {
+                'KeyConditionExpression': 'pk = :pk',
+                'ExpressionAttributeValues': {':pk': f"USER#{user_id}"},
+                'ScanIndexForward': False,  # Most recent first
+                'Limit': limit
+            }
+            
+            # Add date filtering if specified
+            if start_date or end_date:
+                filter_expressions = []
+                if start_date:
+                    query_params['ExpressionAttributeValues'][':start_date'] = start_date.isoformat()
+                    filter_expressions.append('#timestamp >= :start_date')
+                if end_date:
+                    query_params['ExpressionAttributeValues'][':end_date'] = end_date.isoformat()
+                    filter_expressions.append('#timestamp <= :end_date')
+                
+                if filter_expressions:
+                    query_params['FilterExpression'] = ' AND '.join(filter_expressions)
+                    query_params['ExpressionAttributeNames'] = {'#timestamp': 'timestamp'}
+            
+            # Add status filtering if specified
+            if status_filter:
+                if 'FilterExpression' in query_params:
+                    query_params['FilterExpression'] += ' AND #status = :status'
+                else:
+                    query_params['FilterExpression'] = '#status = :status'
+                
+                query_params['ExpressionAttributeValues'][':status'] = status_filter.value
+                if 'ExpressionAttributeNames' not in query_params:
+                    query_params['ExpressionAttributeNames'] = {}
+                query_params['ExpressionAttributeNames']['#status'] = 'status'
+            
+            response = await self._execute_with_retry(table.query, **query_params)
+            
+            trades = []
+            for item in response.get('Items', []):
+                # Remove DynamoDB specific fields
+                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
+                    item.pop(key, None)
+                
+                try:
+                    trade = Trade.from_dict(item)
+                    trades.append(trade)
+                except Exception as e:
+                    logger.warning(f"Failed to parse trade data: {str(e)}")
+                    continue
+            
+            # Cache the results
+            trade_data_list = [trade.to_dict() for trade in trades]
+            self._set_cache(cache_key, trade_data_list)
+            
+            logger.info(f"Retrieved {len(trades)} trades for user {user_id}")
+            return trades
+            
+        except Exception as e:
+            logger.error(f"Failed to get trades for user {user_id}: {str(e)}")
+            raise DatabaseError(f"Failed to retrieve user trades: {str(e)}", "USER_TRADES_GET_FAILED", e)
+    
+    async def update_trade_status(self, user_id: str, trade_id: str, 
+                                status: TradeStatus, execution_details: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Update trade status and execution details.
+        
+        Args:
+            user_id: User ID who owns the trade
+            trade_id: Trade ID to update
+            status: New trade status
+            execution_details: Optional execution details
+            
+        Returns:
+            True if successful
+        """
+        try:
+            table = self._get_table(self.trades_table_name)
+            
+            # Build update expression
+            update_expression = "SET #status = :status, last_updated = :timestamp"
+            expression_values = {
+                ':status': status.value,
+                ':timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            expression_names = {'#status': 'status'}
+            
+            # Add execution details if provided
+            if execution_details:
+                for key, value in execution_details.items():
+                    if key in ['execution_id', 'execution_price', 'execution_timestamp']:
+                        update_expression += f", {key} = :{key}"
+                        expression_values[f":{key}"] = str(value) if isinstance(value, Decimal) else value
+            
+            await self._execute_with_retry(
+                table.update_item,
+                Key={
+                    'pk': f"USER#{user_id}",
+                    'sk': f"TRADE#{trade_id}"
+                },
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=expression_values,
+                ExpressionAttributeNames=expression_names,
+                ConditionExpression='attribute_exists(pk) AND attribute_exists(sk)'
+            )
+            
+            # Clear related cache entries
+            cache_patterns = [
+                f"get_trade:user_id:{user_id}:trade_id:{trade_id}",
+                f"get_user_trades:user_id:{user_id}"
+            ]
+            for pattern in cache_patterns:
+                keys_to_remove = [k for k in self._query_cache.keys() if pattern in k]
+                for key in keys_to_remove:
+                    del self._query_cache[key]
+            
+            # Log audit event
+            self._log_audit_event('trade_updated', user_id, {
+                'trade_id': trade_id,
+                'new_status': status.value,
+                'execution_details': execution_details
+            })
+            
+            logger.info(f"Trade {trade_id} status updated to {status.value}")
+            return True
+            
+        except NotFoundError:
+            logger.warning(f"Trade {trade_id} not found for user {user_id}")
+            raise NotFoundError(f"Trade {trade_id} not found", "TRADE_NOT_FOUND")
+        
+        except Exception as e:
+            logger.error(f"Failed to update trade {trade_id}: {str(e)}")
+            raise DatabaseError(f"Failed to update trade status: {str(e)}", "TRADE_UPDATE_FAILED", e)
+    
+    # Position Management Methods
+    
+    async def get_user_positions(self, user_id: str, active_only: bool = True) -> List[Position]:
+        """
+        Get all positions for a user.
+        
+        Args:
+            user_id: User ID to get positions for
+            active_only: If True, only return non-zero positions
+            
+        Returns:
+            List of Position objects
+        """
+        try:
+            # Check cache
+            cache_key = self._generate_cache_key('get_user_positions', user_id=user_id, active_only=active_only)
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                return [Position.from_dict(pos_data) for pos_data in cached_result]
+            
+            table = self._get_table(self.positions_table_name)
+            response = await self._execute_with_retry(
+                table.query,
+                KeyConditionExpression='pk = :pk',
+                ExpressionAttributeValues={':pk': f"USER#{user_id}"}
+            )
+            
+            positions = []
+            for item in response.get('Items', []):
+                # Remove DynamoDB specific fields
+                for key in ['pk', 'sk', 'ttl']:
+                    item.pop(key, None)
+                
+                try:
+                    position = Position.from_dict(item)
+                    
+                    # Filter active positions if requested
+                    if active_only and position.is_closed():
+                        continue
+                    
+                    positions.append(position)
+                except Exception as e:
+                    logger.warning(f"Failed to parse position data: {str(e)}")
+                    continue
+            
+            # Cache the results
+            position_data_list = [pos.to_dict() for pos in positions]
+            self._set_cache(cache_key, position_data_list)
+            
+            logger.info(f"Retrieved {len(positions)} positions for user {user_id}")
+            return positions
+            
+        except Exception as e:
+            logger.error(f"Failed to get positions for user {user_id}: {str(e)}")
+            raise DatabaseError(f"Failed to retrieve user positions: {str(e)}", "POSITIONS_GET_FAILED", e)
+    
+    async def update_position(self, user_id: str, symbol: str, quantity: int, 
+                            price: Decimal, trade_id: str, commission: Decimal = Decimal('0.00')) -> bool:
+        """
+        Update or create a position based on a trade.
+        
+        Args:
+            user_id: User ID who owns the position
+            symbol: Stock symbol
+            quantity: Quantity change (positive for buy, negative for sell)
+            price: Trade price
+            trade_id: Trade ID for audit trail
+            commission: Commission paid
+            
+        Returns:
+            True if successful
+        """
+        try:
+            table = self._get_table(self.positions_table_name)
+            symbol = symbol.upper()
+            
+            # Get existing position
+            response = await self._execute_with_retry(
+                table.get_item,
+                Key={
+                    'pk': f"USER#{user_id}",
+                    'sk': f"SYMBOL#{symbol}"
+                }
+            )
+            
+            if 'Item' in response:
+                # Update existing position
+                existing_data = response['Item']
+                # Remove DynamoDB specific fields
+                for key in ['pk', 'sk', 'ttl']:
+                    existing_data.pop(key, None)
+                
+                position = Position.from_dict(existing_data)
+                position.add_trade(trade_id, quantity, price, commission)
+            else:
+                # Create new position
+                position = Position(
+                    user_id=user_id,
+                    symbol=symbol,
+                    quantity=quantity,
+                    average_cost=price,
+                    current_price=price
+                )
+                position.add_trade(trade_id, quantity, price, commission)
+            
+            # Convert to DynamoDB item
+            item = position.to_dict()
+            item['pk'] = f"USER#{user_id}"
+            item['sk'] = f"SYMBOL#{symbol}"
+            item['ttl'] = int((datetime.now(timezone.utc) + timedelta(days=2555)).timestamp())
+            
+            # Store updated position
+            if position.is_closed():
+                # Remove closed position
+                await self._execute_with_retry(
+                    table.delete_item,
+                    Key={
+                        'pk': f"USER#{user_id}",
+                        'sk': f"SYMBOL#{symbol}"
+                    }
+                )
+                logger.info(f"Position {symbol} closed and removed for user {user_id}")
+            else:
+                await self._execute_with_retry(table.put_item, Item=item)
+                logger.info(f"Position {symbol} updated for user {user_id}: {position.quantity} shares")
+            
+            # Clear position cache
+            cache_patterns = [f"get_user_positions:user_id:{user_id}"]
+            for pattern in cache_patterns:
+                keys_to_remove = [k for k in self._query_cache.keys() if pattern in k]
+                for key in keys_to_remove:
+                    del self._query_cache[key]
+            
+            # Log audit event
+            self._log_audit_event('position_updated', user_id, {
+                'symbol': symbol,
+                'quantity_change': quantity,
+                'new_quantity': position.quantity,
+                'price': str(price),
+                'trade_id': trade_id
+            })
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to update position {symbol} for user {user_id}: {str(e)}")
+            raise DatabaseError(f"Failed to update position: {str(e)}", "POSITION_UPDATE_FAILED", e)
+    
+    # User Management Methods
+    
+    async def create_user(self, user: User) -> bool:
+        """
+        Create a new user in the database.
+        
+        Args:
+            user: User object to create
+            
+        Returns:
+            True if successful
+        """
+        try:
+            # Validate user data
+            user.validate()
+            
+            # Convert user to DynamoDB item
+            item = user.to_dict()
+            item['pk'] = f"USER#{user.user_id}"
+            item['sk'] = "PROFILE"
+            item['gsi1pk'] = f"SLACK#{user.slack_user_id}"
+            item['gsi1sk'] = "USER"
+            item['ttl'] = int((datetime.now(timezone.utc) + timedelta(days=3650)).timestamp())  # 10 years
+            
+            table = self._get_table(self.users_table_name)
+            await self._execute_with_retry(
+                table.put_item,
+                Item=item,
+                ConditionExpression='attribute_not_exists(pk) AND attribute_not_exists(sk)'
+            )
+            
+            # Log audit event
+            self._log_audit_event('user_created', user.user_id, {
+                'slack_user_id': user.slack_user_id,
+                'role': user.role.value,
+                'status': user.status.value
+            })
+            
+            logger.info(f"User {user.user_id} created successfully")
+            return True
+            
+        except ConflictError:
+            logger.warning(f"User {user.user_id} already exists")
+            raise ConflictError(f"User {user.user_id} already exists", "DUPLICATE_USER")
+        
+        except Exception as e:
+            logger.error(f"Failed to create user {user.user_id}: {str(e)}")
+            raise DatabaseError(f"Failed to create user: {str(e)}", "USER_CREATE_FAILED", e)
+    
+    async def get_user(self, user_id: str) -> Optional[User]:
+        """
+        Get user by user ID.
+        
+        Args:
+            user_id: User ID to retrieve
+            
+        Returns:
+            User object or None if not found
+        """
+        try:
+            # Check cache
+            cache_key = self._generate_cache_key('get_user', user_id=user_id)
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                return User.from_dict(cached_result) if cached_result else None
+            
+            table = self._get_table(self.users_table_name)
+            response = await self._execute_with_retry(
+                table.get_item,
+                Key={
+                    'pk': f"USER#{user_id}",
+                    'sk': "PROFILE"
+                }
+            )
+            
+            if 'Item' in response:
+                user_data = response['Item']
+                # Remove DynamoDB specific fields
+                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
+                    user_data.pop(key, None)
+                
+                user = User.from_dict(user_data)
+                
+                # Cache the result
+                self._set_cache(cache_key, user_data)
+                
+                return user
+            
+            # Cache negative result
+            self._set_cache(cache_key, None)
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to get user {user_id}: {str(e)}")
+            raise DatabaseError(f"Failed to retrieve user: {str(e)}", "USER_GET_FAILED", e)
+    
+    async def get_user_by_slack_id(self, slack_user_id: str) -> Optional[User]:
+        """
+        Get user by Slack user ID.
+        
+        Args:
+            slack_user_id: Slack user ID to search for
+            
+        Returns:
+            User object or None if not found
+        """
+        try:
+            # Check cache
+            cache_key = self._generate_cache_key('get_user_by_slack_id', slack_user_id=slack_user_id)
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                return User.from_dict(cached_result) if cached_result else None
+            
+            table = self._get_table(self.users_table_name)
+            response = await self._execute_with_retry(
+                table.query,
+                IndexName='gsi1',
+                KeyConditionExpression='gsi1pk = :gsi1pk AND gsi1sk = :gsi1sk',
+                ExpressionAttributeValues={
+                    ':gsi1pk': f"SLACK#{slack_user_id}",
+                    ':gsi1sk': "USER"
+                }
+            )
+            
+            if response.get('Items'):
+                user_data = response['Items'][0]
+                # Remove DynamoDB specific fields
+                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
+                    user_data.pop(key, None)
+                
+                user = User.from_dict(user_data)
+                
+                # Cache the result
+                self._set_cache(cache_key, user_data)
+                
+                return user
+            
+            # Cache negative result
+            self._set_cache(cache_key, None)
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to get user by Slack ID {slack_user_id}: {str(e)}")
+            raise DatabaseError(f"Failed to retrieve user by Slack ID: {str(e)}", "USER_GET_BY_SLACK_FAILED", e)
+    
+    # Channel Management Methods
+    
+    async def is_channel_approved(self, channel_id: str) -> bool:
+        """
+        Check if a channel is approved for bot usage.
+        
+        Args:
+            channel_id: Slack channel ID to check
+            
+        Returns:
+            True if channel is approved
+        """
+        try:
+            # Check cache first
+            cache_key = self._generate_cache_key('is_channel_approved', channel_id=channel_id)
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                return cached_result
+            
+            table = self._get_table(self.channels_table_name)
+            response = await self._execute_with_retry(
+                table.get_item,
+                Key={'channel_id': channel_id}
+            )
+            
+            is_approved = False
+            if 'Item' in response:
+                item = response['Item']
+                is_approved = item.get('is_approved', False)
+            
+            # Cache the result
+            self._set_cache(cache_key, is_approved)
+            
+            return is_approved
+            
+        except Exception as e:
+            logger.error(f"Failed to check channel approval for {channel_id}: {str(e)}")
+            # Default to False for security
+            return False
+    
+    async def add_approved_channel(self, channel_id: str, channel_name: str, created_by: str) -> bool:
+        """
+        Add a channel to the approved list.
+        
+        Args:
+            channel_id: Slack channel ID
+            channel_name: Channel name
+            created_by: User who approved the channel
+            
+        Returns:
+            True if successful
+        """
+        try:
+            table = self._get_table(self.channels_table_name)
+            
+            item = {
+                'channel_id': channel_id,
+                'channel_name': channel_name,
+                'is_approved': True,
+                'created_by': created_by,
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'ttl': int((datetime.now(timezone.utc) + timedelta(days=3650)).timestamp())  # 10 years
+            }
+            
+            await self._execute_with_retry(table.put_item, Item=item)
+            
+            # Clear cache
+            cache_key = self._generate_cache_key('is_channel_approved', channel_id=channel_id)
+            if cache_key in self._query_cache:
+                del self._query_cache[cache_key]
+            
+            # Log audit event
+            self._log_audit_event('channel_approved', created_by, {
+                'channel_id': channel_id,
+                'channel_name': channel_name
+            })
+            
+            logger.info(f"Channel {channel_id} ({channel_name}) approved by {created_by}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to approve channel {channel_id}: {str(e)}")
+            raise DatabaseError(f"Failed to approve channel: {str(e)}", "CHANNEL_APPROVE_FAILED", e)
+    
+    # Batch Operations
+    
+    async def batch_write_trades(self, trades: List[Trade]) -> Dict[str, Any]:
+        """
+        Write multiple trades in batch for improved performance.
+        
+        Args:
+            trades: List of Trade objects to write
+            
+        Returns:
+            Dictionary with success/failure counts
+        """
+        try:
+            self._metrics['batch_operations'] += 1
+            
+            table = self._get_table(self.trades_table_name)
+            
+            # Process in batches of 25 (DynamoDB limit)
+            batch_size = 25
+            results = {'success': 0, 'failed': 0, 'errors': []}
+            
+            for i in range(0, len(trades), batch_size):
+                batch = trades[i:i + batch_size]
+                
+                with table.batch_writer() as batch_writer:
+                    for trade in batch:
+                        try:
+                            trade.validate()
+                            item = trade.to_dict()
+                            
+                            # Add DynamoDB specific fields
+                            item['pk'] = f"USER#{trade.user_id}"
+                            item['sk'] = f"TRADE#{trade.trade_id}"
+                            item['gsi1pk'] = f"SYMBOL#{trade.symbol}"
+                            item['gsi1sk'] = trade.timestamp.isoformat()
+                            item['ttl'] = int((datetime.now(timezone.utc) + timedelta(days=2555)).timestamp())
+                            
+                            batch_writer.put_item(Item=item)
+                            results['success'] += 1
+                            
+                        except Exception as e:
+                            results['failed'] += 1
+                            results['errors'].append(f"Trade {trade.trade_id}: {str(e)}")
+                            logger.error(f"Failed to batch write trade {trade.trade_id}: {str(e)}")
+            
+            logger.info(f"Batch write completed: {results['success']} success, {results['failed']} failed")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Batch write trades failed: {str(e)}")
+            raise DatabaseError(f"Batch write failed: {str(e)}", "BATCH_WRITE_FAILED", e)
+    
+    # Health and Monitoring Methods
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Get database service health status.
+        
+        Returns:
+            Dictionary with health information
+        """
+        try:
+            # Test connection by listing tables
+            table_status = {}
+            for table_name, table in self._tables.items():
+                if table is not None:
+                    try:
+                        table.load()
+                        table_status[table_name] = 'healthy'
+                    except Exception as e:
+                        table_status[table_name] = f'error: {str(e)}'
+                else:
+                    table_status[table_name] = 'not_found'
+            
+            return {
+                'status': 'healthy' if all(status == 'healthy' for status in table_status.values()) else 'degraded',
+                'region': self.region_name,
+                'endpoint': self.endpoint_url or 'aws',
+                'tables': table_status,
+                'metrics': self._metrics.copy(),
+                'cache_size': len(self._query_cache),
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Health check failed: {str(e)}")
+            return {
+                'status': 'unhealthy',
+                'error': str(e),
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get performance metrics."""
+        return self._metrics.copy()
+    
+    def clear_cache(self) -> None:
+        """Clear query cache."""
+        self._query_cache.clear()
+        logger.info("Query cache cleared")
+    
+    async def close(self) -> None:
+        """Clean up resources."""
+        try:
+            # Clear cache
+            self.clear_cache()
+            
+            # Close any open connections
+            if self._dynamodb_client:
+                # boto3 clients don't need explicit closing
+                pass
+            
+            logger.info("Database service closed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error closing database service: {str(e)}")

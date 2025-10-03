@@ -349,6 +349,50 @@ class Position:
                 data[field] = data[field].isoformat()
         
         return data
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Position':
+        """
+        Create Position instance from dictionary.
+        
+        Args:
+            data: Dictionary containing position data
+            
+        Returns:
+            Position instance
+            
+        Raises:
+            PortfolioValidationError: If data is invalid
+        """
+        try:
+            # Convert enums back
+            if 'position_type' in data and isinstance(data['position_type'], str):
+                data['position_type'] = PositionType(data['position_type'])
+            
+            # Convert Decimal fields back
+            decimal_fields = ['average_cost', 'current_price', 'realized_pnl', 'unrealized_pnl',
+                             'total_cost', 'current_value', 'day_change', 'day_change_percent',
+                             'dividends_received', 'commission_paid']
+            
+            for field in decimal_fields:
+                if field in data and data[field] is not None:
+                    data[field] = Decimal(str(data[field]))
+            
+            # Convert risk metrics back
+            if 'risk_metrics' in data:
+                data['risk_metrics'] = {k: Decimal(str(v)) for k, v in data['risk_metrics'].items()}
+            
+            # Convert datetime fields back
+            datetime_fields = ['opened_date', 'last_updated']
+            for field in datetime_fields:
+                if field in data and data[field] is not None:
+                    if isinstance(data[field], str):
+                        data[field] = datetime.fromisoformat(data[field].replace('Z', '+00:00'))
+            
+            return cls(**data)
+            
+        except (ValueError, TypeError, KeyError) as e:
+            raise PortfolioValidationError(f"Failed to create Position from dict: {str(e)}")
 
 
 @dataclass
@@ -708,19 +752,41 @@ class Portfolio:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Portfolio':
         """Create Portfolio from dictionary."""
-        # Convert positions back
-        if 'positions' in data:
-            positions = {}
-            for symbol, pos_data in data['positions'].items():
-                # Convert position data back to Position object
-                # This would need Position.from_dict method
-                positions[symbol] = Position.from_dict(pos_data) if hasattr(Position, 'from_dict') else pos_data
-            data['positions'] = positions
-        
-        # Convert other fields back (similar to other models)
-        # Implementation would be similar to Trade.from_dict and User.from_dict
-        
-        return cls(**data)
+        try:
+            # Convert positions back
+            if 'positions' in data:
+                positions = {}
+                for symbol, pos_data in data['positions'].items():
+                    positions[symbol] = Position.from_dict(pos_data)
+                data['positions'] = positions
+            
+            # Convert enums back
+            if 'status' in data and isinstance(data['status'], str):
+                data['status'] = PortfolioStatus(data['status'])
+            
+            # Convert Decimal fields back
+            decimal_fields = ['cash_balance', 'total_value', 'total_cost_basis', 'total_pnl',
+                             'day_change', 'day_change_percent']
+            
+            for field in decimal_fields:
+                if field in data and data[field] is not None:
+                    data[field] = Decimal(str(data[field]))
+            
+            # Convert risk metrics back
+            if 'risk_metrics' in data:
+                data['risk_metrics'] = {k: Decimal(str(v)) for k, v in data['risk_metrics'].items()}
+            
+            # Convert datetime fields back
+            datetime_fields = ['inception_date', 'last_updated']
+            for field in datetime_fields:
+                if field in data and data[field] is not None:
+                    if isinstance(data[field], str):
+                        data[field] = datetime.fromisoformat(data[field].replace('Z', '+00:00'))
+            
+            return cls(**data)
+            
+        except (ValueError, TypeError, KeyError) as e:
+            raise PortfolioValidationError(f"Failed to create Portfolio from dict: {str(e)}")
     
     def __str__(self) -> str:
         """String representation of portfolio."""
