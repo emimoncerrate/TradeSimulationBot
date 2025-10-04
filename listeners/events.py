@@ -38,7 +38,11 @@ from models.trade import Trade, TradeStatus
 from models.portfolio import Position
 from ui.dashboard import Dashboard, DashboardContext, DashboardTheme
 from ui.notifications import NotificationService
-from utils.formatters import format_currency, format_percentage, format_number
+from utils.formatters import format_money, format_percent
+
+def format_number(value):
+    """Simple number formatter with commas."""
+    return f"{value:,}"
 from config.settings import get_config
 
 # Configure logging

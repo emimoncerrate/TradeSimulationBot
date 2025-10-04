@@ -200,10 +200,10 @@ class ServiceContainer:
             self._metrics['services_registered'] += 1
             
             logger.info(
-                f"Service registered: {service_type.__name__}",
-                implementation=implementation.__name__ if implementation else service_type.__name__,
-                scope=scope.value,
-                dependencies=[dep.__name__ for dep in dependencies or []]
+                f"Service registered: {service_type.__name__} "
+                f"(implementation: {implementation.__name__ if implementation else service_type.__name__}, "
+                f"scope: {scope.value}, "
+                f"dependencies: {[dep.__name__ for dep in dependencies or []]})"
             )
             
             return self

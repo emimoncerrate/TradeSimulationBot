@@ -9,6 +9,7 @@ with advanced features like query optimization, batch operations, and transactio
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -123,10 +124,70 @@ class DatabaseService:
             'transactions': 0
         }
         
-        # Initialize connection
-        self._initialize_connection()
+        # Check if we should use mock mode for development
+        if os.getenv('ENVIRONMENT') == 'development' and os.getenv('AWS_ACCESS_KEY_ID') == 'mock-access-key-id':
+            self._use_mock_mode()
+        else:
+            # Initialize connection
+            self._initialize_connection()
         
         logger.info(f"DatabaseService initialized for region {region_name}")
+    
+    def _use_mock_mode(self) -> None:
+        """Initialize mock database for development."""
+        self.mock_data = {
+            'users': {},
+            'trades': {},
+            'positions': {},
+            'portfolios': {}
+        }
+        self.is_mock_mode = True
+        logger.info("DatabaseService initialized in MOCK MODE for development")
+        
+        # Override methods with mock implementations
+        self.get_user = self._mock_get_user
+        self.create_user = self._mock_create_user
+        self.get_trade = self._mock_get_trade
+        self.log_trade = self._mock_log_trade
+        self.get_user_positions = self._mock_get_user_positions
+        self.update_position = self._mock_update_position
+    
+    async def _mock_get_user(self, user_id: str) -> Optional[User]:
+        """Mock implementation for get_user."""
+        return self.mock_data['users'].get(user_id)
+    
+    async def _mock_create_user(self, user: User) -> bool:
+        """Mock implementation for create_user."""
+        self.mock_data['users'][user.user_id] = user
+        return True
+    
+    async def _mock_get_trade(self, user_id: str, trade_id: str) -> Optional[Trade]:
+        """Mock implementation for get_trade."""
+        return self.mock_data['trades'].get(f"{user_id}:{trade_id}")
+    
+    async def _mock_log_trade(self, trade: Trade) -> bool:
+        """Mock implementation for log_trade."""
+        self.mock_data['trades'][f"{trade.user_id}:{trade.trade_id}"] = trade
+        return True
+    
+    async def _mock_get_user_positions(self, user_id: str, active_only: bool = True) -> List[Position]:
+        """Mock implementation for get_user_positions."""
+        return list(self.mock_data['positions'].get(user_id, {}).values())
+    
+    async def _mock_update_position(self, user_id: str, symbol: str, quantity: int, 
+                                  price: Decimal, trade_id: str, commission: Decimal = Decimal('0.00')) -> bool:
+        """Mock implementation for update_position."""
+        if user_id not in self.mock_data['positions']:
+            self.mock_data['positions'][user_id] = {}
+        
+        # Simple position update logic
+        self.mock_data['positions'][user_id][symbol] = {
+            'symbol': symbol,
+            'quantity': quantity,
+            'price': price,
+            'trade_id': trade_id
+        }
+        return True
     
     def _initialize_connection(self) -> None:
         """Initialize DynamoDB connection with proper configuration."""

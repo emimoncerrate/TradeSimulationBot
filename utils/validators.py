@@ -789,3 +789,115 @@ def sanitize_user_input(value: str, field_type: str = 'general') -> ValidationRe
         ValidationResult with sanitized value
     """
     return SecurityValidator.sanitize_input(value, field_type)
+
+
+def validate_channel_id(channel_id: str) -> ValidationResult:
+    """
+    Validate Slack channel ID format.
+    
+    Args:
+        channel_id: Channel ID to validate
+        
+    Returns:
+        ValidationResult with validation status
+    """
+    result = ValidationResult()
+    
+    if not channel_id:
+        result.add_error("Channel ID cannot be empty")
+        result.is_valid = False
+        return result
+    
+    # Slack channel IDs start with C and are followed by alphanumeric characters
+    if not re.match(r'^C[A-Z0-9]{8,}$', channel_id.upper()):
+        result.add_error("Invalid channel ID format")
+        result.is_valid = False
+        return result
+    
+    result.cleaned_value = channel_id.upper()
+    return result
+
+
+def validate_user_id(user_id: str) -> ValidationResult:
+    """
+    Validate Slack user ID format.
+    
+    Args:
+        user_id: User ID to validate
+        
+    Returns:
+        ValidationResult with validation status
+    """
+    result = ValidationResult()
+    
+    if not user_id:
+        result.add_error("User ID cannot be empty")
+        result.is_valid = False
+        return result
+    
+    # Slack user IDs start with U and are followed by alphanumeric characters
+    if not re.match(r'^U[A-Z0-9]{8,}$', user_id.upper()):
+        result.add_error("Invalid user ID format")
+        result.is_valid = False
+        return result
+    
+    result.cleaned_value = user_id.upper()
+    return result
+
+
+def validate_quantity(quantity: Union[int, str, float]) -> ValidationResult:
+    """
+    Validate trade quantity.
+    
+    Args:
+        quantity: Quantity to validate
+        
+    Returns:
+        ValidationResult with validation status
+    """
+    result = ValidationResult()
+    
+    try:
+        qty = int(quantity)
+        if qty <= 0:
+            result.add_error("Quantity must be positive")
+            result.is_valid = False
+        elif qty > 1000000:  # Reasonable upper limit
+            result.add_error("Quantity too large")
+            result.is_valid = False
+        else:
+            result.cleaned_value = qty
+    except (ValueError, TypeError):
+        result.add_error("Invalid quantity format")
+        result.is_valid = False
+    
+    return result
+
+
+def validate_price(price: Union[Decimal, str, float]) -> ValidationResult:
+    """
+    Validate trade price.
+    
+    Args:
+        price: Price to validate
+        
+    Returns:
+        ValidationResult with validation status
+    """
+    result = ValidationResult()
+    
+    try:
+        p = float(price)
+        if p <= 0:
+            result.add_error("Price must be positive")
+            result.is_valid = False
+        elif p > 1000000:  # Reasonable upper limit
+            result.add_error("Price too high")
+            result.is_valid = False
+        else:
+            result.cleaned_value = Decimal(str(p))
+    except (ValueError, TypeError):
+        result.add_error("Invalid price format")
+        result.is_valid = False
+    
+    return result

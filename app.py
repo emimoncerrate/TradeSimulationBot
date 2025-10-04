@@ -18,6 +18,10 @@ from typing import Optional, Dict, Any, Callable
 import json
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
 import traceback
 from functools import wraps
 from collections import defaultdict, deque

@@ -22,8 +22,12 @@ from models.trade import Trade, TradeType, RiskLevel
 from models.user import User, UserRole, Permission
 from services.market_data import MarketQuote, MarketStatus, DataQuality
 from services.risk_analysis import RiskAnalysis, RiskFactor, RiskCategory
-from utils.formatters import format_currency, format_percentage, format_number
-from utils.validators import validate_symbol, validate_quantity, validate_price
+from utils.formatters import format_money, format_percent
+
+def format_number(value):
+    """Simple number formatter with commas."""
+    return f"{value:,}"
+from utils.validators import validate_symbol, validate_trade_input, validate_quantity, validate_price
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -629,12 +633,12 @@ class TradeWidget:
         price_change_text = ""
         
         if quote.price_change and quote.price_change_percent:
-            price_change_text = f" ({price_change_emoji} {format_currency(quote.price_change)} / {format_percentage(quote.price_change_percent)})"
+            price_change_text = f" ({price_change_emoji} {format_money(quote.price_change)} / {format_percent(quote.price_change_percent)})"
         
         price_fields = [
             {
                 "type": "mrkdwn",
-                "text": f"*Current Price:*\n{format_currency(quote.current_price)}{price_change_text}"
+                "text": f"*Current Price:*\n{format_money(quote.current_price)}{price_change_text}"
             }
         ]
         
@@ -642,18 +646,18 @@ class TradeWidget:
         if quote.open_price:
             price_fields.append({
                 "type": "mrkdwn",
-                "text": f"*Open:* {format_currency(quote.open_price)}"
+                "text": f"*Open:* {format_money(quote.open_price)}"
             })
         
         if quote.high_price and quote.low_price:
             price_fields.extend([
                 {
                     "type": "mrkdwn",
-                    "text": f"*High:* {format_currency(quote.high_price)}"
+                    "text": f"*High:* {format_money(quote.high_price)}"
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*Low:* {format_currency(quote.low_price)}"
+                    "text": f"*Low:* {format_money(quote.low_price)}"
                 }
             ])
         
@@ -683,7 +687,7 @@ class TradeWidget:
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*💰 Estimated Trade Value:* {format_currency(trade_value)}"
+                    "text": f"*💰 Estimated Trade Value:* {format_money(trade_value)}"
                 }
             })
         
@@ -862,11 +866,11 @@ class TradeWidget:
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*Price:* {format_currency(context.price)}"
+                    "text": f"*Price:* {format_money(context.price)}"
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*Total Value:* {format_currency(trade_value)}"
+                    "text": f"*Total Value:* {format_money(trade_value)}"
                 },
                 {
                     "type": "mrkdwn",

@@ -13,6 +13,7 @@ to provide actionable risk insights for trading decisions.
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -37,6 +38,16 @@ from config.settings import get_config
 from models.trade import Trade
 from models.portfolio import Portfolio, Position
 from services.market_data import MarketQuote, get_market_data_service
+
+
+class RiskAnalysisError(Exception):
+    """Custom exception for risk analysis service errors."""
+    
+    def __init__(self, message: str, trade_id: str = None, error_code: str = None):
+        self.message = message
+        self.trade_id = trade_id
+        self.error_code = error_code
+        super().__init__(self.message)
 
 
 class RiskLevel(Enum):
@@ -290,6 +301,7 @@ class RiskAnalysisService:
         
         # Initialize AWS Bedrock client
         self.bedrock_client: Optional[boto3.client] = None
+        self.is_mock_mode = False
         
         # Initialize caching
         self.analysis_cache: Dict[str, Tuple[RiskAnalysis, datetime]] = {}
@@ -331,6 +343,12 @@ class RiskAnalysisService:
     async def initialize(self) -> None:
         """Initialize async resources and AWS clients."""
         try:
+            # Check if we should use mock mode for development
+            if os.getenv('ENVIRONMENT') == 'development' and os.getenv('AWS_ACCESS_KEY_ID') == 'mock-access-key-id':
+                self.logger.info("RiskAnalysisService initialized in MOCK MODE for development")
+                self.is_mock_mode = True
+                return
+            
             # Initialize Bedrock client
             self.bedrock_client = boto3.client(
                 'bedrock-runtime',

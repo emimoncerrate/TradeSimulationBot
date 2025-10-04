@@ -24,9 +24,13 @@ from models.user import User, UserRole, Permission
 from models.portfolio import Portfolio, Position
 from services.risk_analysis import RiskAnalysis, RiskFactor
 from utils.formatters import (
-    format_currency, format_percentage, format_number, 
-    format_datetime, format_date
+    format_money, format_percent, 
+    format_date
 )
+
+def format_number(value):
+    """Simple number formatter with commas."""
+    return f"{value:,}"
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -471,7 +475,7 @@ class NotificationService:
             self.logger.error("Failed to send error notification", error=str(e))
             raise e    
    
- async def send_system_notification(
+    async def send_system_notification(
         self, 
         user: User, 
         title: str, 
@@ -764,11 +768,11 @@ class NotificationService:
             "fields": [
                 {
                     "type": "mrkdwn",
-                    "text": f"*Price:*\n{format_currency(trade.price)}"
+                    "text": f"*Price:*\n{format_money(trade.price)}"
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*Total Value:*\n{format_currency(trade_value)}"
+                    "text": f"*Total Value:*\n{format_money(trade_value)}"
                 },
                 {
                     "type": "mrkdwn",
@@ -863,7 +867,7 @@ class NotificationService:
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*Total Value:*\n{format_currency(trade_value)}"
+                    "text": f"*Total Value:*\n{format_money(trade_value)}"
                 }
             ]
         })
@@ -953,7 +957,7 @@ class NotificationService:
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*Value:*\n{format_currency(trade_value)}"
+                    "text": f"*Value:*\n{format_money(trade_value)}"
                 },
                 {
                     "type": "mrkdwn",
@@ -1042,11 +1046,11 @@ class NotificationService:
                 "fields": [
                     {
                         "type": "mrkdwn",
-                        "text": f"*Portfolio Value:*\n{format_currency(portfolio.total_value)}"
+                        "text": f"*Portfolio Value:*\n{format_money(portfolio.total_value)}"
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"*Total P&L:*\n{format_currency(portfolio.total_pnl)}"
+                        "text": f"*Total P&L:*\n{format_money(portfolio.total_pnl)}"
                     },
                     {
                         "type": "mrkdwn",
@@ -1054,7 +1058,7 @@ class NotificationService:
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"*Cash:*\n{format_currency(portfolio.cash_balance)}"
+                        "text": f"*Cash:*\n{format_money(portfolio.cash_balance)}"
                     }
                 ]
             })

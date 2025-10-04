@@ -24,9 +24,24 @@ from models.user import User, UserRole, Permission
 from models.trade import Trade, TradeStatus, RiskLevel
 from services.market_data import MarketQuote, MarketStatus
 from utils.formatters import (
-    format_currency, format_percentage, format_number, 
-    format_datetime, format_date, format_large_number
+    format_money, format_percent, 
+    format_date
 )
+
+def format_number(value):
+    """Simple number formatter with commas."""
+    return f"{value:,}"
+
+def format_large_number(value):
+    """Format large numbers with K, M, B suffixes."""
+    if value >= 1_000_000_000:
+        return f"{value/1_000_000_000:.1f}B"
+    elif value >= 1_000_000:
+        return f"{value/1_000_000:.1f}M"
+    elif value >= 1_000:
+        return f"{value/1_000:.1f}K"
+    else:
+        return f"{value:,.0f}"
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -60,6 +75,14 @@ class SortOption(Enum):
     PNL_ASC = "pnl_asc"
     SYMBOL_ASC = "symbol_asc"
     SYMBOL_DESC = "symbol_desc"
+
+
+class DashboardTheme(Enum):
+    """Dashboard theme options."""
+    LIGHT = "light"
+    DARK = "dark"
+    COMPACT = "compact"
+    DETAILED = "detailed"
 
 
 @dataclass
@@ -718,8 +741,8 @@ class Dashboard:
             })
         
         return blocks    
-    d
-ef _build_analytics_section(self, context: DashboardContext) -> List[Dict[str, Any]]:
+    
+    def _build_analytics_section(self, context: DashboardContext) -> List[Dict[str, Any]]:
         """Build advanced analytics section."""
         blocks = []
         portfolio = context.portfolio

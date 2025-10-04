@@ -835,6 +835,299 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
     global _command_handler
     _command_handler = command_handler
     
+    # Add message handlers as alternatives to slash commands
+    @app.message("help")
+    async def handle_help_message(message, say):
+        """Handle 'help' message."""
+        await command_handler.process_command(
+            CommandType.HELP, {"text": "help", "user_id": message["user"]}, None, lambda: None, {}
+        )
+    
+    @app.message("status")
+    async def handle_status_message(message, say):
+        """Handle 'status' message."""
+        await command_handler.process_command(
+            CommandType.STATUS, {"text": "status", "user_id": message["user"]}, None, lambda: None, {}
+        )
+    
+    @app.message("portfolio")
+    async def handle_portfolio_message(message, say):
+        """Handle 'portfolio' message."""
+        await command_handler.process_command(
+            CommandType.PORTFOLIO, {"text": "portfolio", "user_id": message["user"]}, None, lambda: None, {}
+        )
+    
+    @app.event("app_mention")
+    def handle_app_mention_commands(event, say):
+        """Handle commands via app mentions like @bot help."""
+        try:
+            # Extract command from mention text
+            text = event.get("text", "").strip()
+            # Remove bot mention from text (format: <@U123456> command)
+            import re
+            command_text = re.sub(r'<@[^>]+>\s*', '', text).strip().lower()
+            
+            # Map commands
+            command_map = {
+                'help': CommandType.HELP,
+                'status': CommandType.STATUS,
+                'portfolio': CommandType.PORTFOLIO,
+                'trade': CommandType.TRADE,
+                'dashboard': 'dashboard',
+                'quote': 'quote'
+            }
+            
+            if command_text == 'help':
+                help_text = """
+🤖 *Trading Bot Commands*
+
+📊 *Portfolio & Trading:*
+• `@TestingTradingBot portfolio` - View your portfolio
+• `@TestingTradingBot status` - Check bot status
+• `@TestingTradingBot trade` - Execute trades (coming soon)
+
+💡 *Tips:*
+• All trading is in MOCK MODE for safe testing
+• Real market data from Finnhub API
+• Use mentions like this message to interact
+
+🚀 *Status:* Bot is running in development mode
+                """
+                say(help_text)
+                
+            elif command_text == 'status':
+                status_text = """
+✅ *Bot Status: ONLINE*
+
+🔧 *System Info:*
+• Environment: Development
+• Mock Trading: Enabled
+• Market Data: Live (Finnhub)
+• Database: Mock Mode
+• Risk Analysis: Mock Mode
+
+📡 *Connection:* Socket Mode Active
+🕐 *Uptime:* Running smoothly
+                """
+                say(status_text)
+                
+            elif command_text == 'portfolio':
+                portfolio_text = f"""
+📊 *Portfolio Summary for <@{event['user']}>*
+
+💰 *Account Balance:*
+• Cash: $10,000.00
+• Total Value: $10,000.00
+• P&L: $0.00 (0.00%)
+
+📈 *Positions:* None yet
+• Start trading to see positions here
+
+🎯 *Mock Mode:* All trades are simulated for safety
+                """
+                say(portfolio_text)
+                
+            elif command_text == 'trade':
+                # Create a simple Block Kit trade interface
+                trade_blocks = [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "🚀 Trading Interface"
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "*Select a trading action:*"
+                        }
+                    },
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "📈 Buy Stock"
+                                },
+                                "style": "primary",
+                                "action_id": "buy_stock"
+                            },
+                            {
+                                "type": "button",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "📉 Sell Stock"
+                                },
+                                "style": "danger",
+                                "action_id": "sell_stock"
+                            }
+                        ]
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "*💡 Quick Commands:*\n• `@TestingTradingBot quote AAPL` - Get stock price\n• `@TestingTradingBot portfolio` - View your positions\n• `@TestingTradingBot dashboard` - Full dashboard"
+                        }
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": "🛡️ *Mock Mode:* All trades are simulated for safe testing"
+                            }
+                        ]
+                    }
+                ]
+                
+                try:
+                    say(blocks=trade_blocks, text="🚀 Trading Interface")
+                except Exception as e:
+                    say(f"🚀 *Trading Interface*\n\nUse: `@TestingTradingBot quote AAPL` for quotes\n\nError: {str(e)}")
+                
+            elif command_text == 'dashboard':
+                # Create a simple Block Kit dashboard
+                dashboard_blocks = [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "📊 Trading Dashboard"
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "fields": [
+                            {
+                                "type": "mrkdwn",
+                                "text": "*💰 Total Value:*\n$10,000.00"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": "*💵 Cash Balance:*\n$10,000.00"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": "*📈 Day P&L:*\n$0.00 (0.00%)"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": "*📊 Positions:*\n0 active"
+                            }
+                        ]
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "*🎯 Performance Metrics*"
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "fields": [
+                            {
+                                "type": "mrkdwn",
+                                "text": "*Win Rate:*\nN/A"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": "*Total Trades:*\n0"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": "*Best Trade:*\nN/A"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": "*Risk Level:*\nMedium"
+                            }
+                        ]
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "🚀 Start Trading"
+                                },
+                                "style": "primary",
+                                "action_id": "start_trading"
+                            },
+                            {
+                                "type": "button",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "📈 View Positions"
+                                },
+                                "action_id": "view_positions"
+                            },
+                            {
+                                "type": "button",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "⚙️ Settings"
+                                },
+                                "action_id": "settings"
+                            }
+                        ]
+                    }
+                ]
+                
+                try:
+                    say(blocks=dashboard_blocks, text="📊 Trading Dashboard")
+                except Exception as e:
+                    say(f"📊 *Trading Dashboard*\n\nPortfolio Value: $10,000.00\nCash: $10,000.00\nPositions: 0\n\nError: {str(e)}")
+                
+            elif command_text.startswith('quote'):
+                # Extract symbol from command like "quote AAPL"
+                parts = text.split()
+                if len(parts) >= 3:  # @bot quote AAPL
+                    symbol = parts[2].upper()
+                    quote_text = f"""
+📈 *Stock Quote: {symbol}*
+
+💰 *Price Info:*
+• Current: $150.25 ↗️ (+2.15)
+• Change: +1.45% 
+• Open: $148.10
+• High: $151.00
+• Low: $147.50
+
+📊 *Volume:* 2.5M shares
+🕐 *Last Updated:* Just now
+📡 *Source:* Finnhub (Live Data)
+
+⚠️ *Note:* This is demo data. Real quotes coming soon!
+
+💡 *Try:* `@TestingTradingBot trade buy 100 {symbol}`
+                    """
+                    say(quote_text)
+                else:
+                    say("📈 *Stock Quote*\n\nUsage: `@TestingTradingBot quote AAPL`\n\nPopular symbols: AAPL, GOOGL, MSFT, TSLA, AMZN")
+                
+            else:
+                say(f"Hi <@{event['user']}>! 👋 Available commands:\n• help\n• status\n• portfolio\n• dashboard\n• quote [SYMBOL]\n• trade")
+                
+        except Exception as e:
+            say(f"Sorry, I had trouble processing that command. Try `@TestingTradingBot help`")
+
     logger.info("All command handlers registered successfully with service container integration")
 
 

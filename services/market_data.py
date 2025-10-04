@@ -35,6 +35,16 @@ import structlog
 from config.settings import get_config
 
 
+class MarketDataError(Exception):
+    """Custom exception for market data service errors."""
+    
+    def __init__(self, message: str, symbol: str = None, error_code: str = None):
+        self.message = message
+        self.symbol = symbol
+        self.error_code = error_code
+        super().__init__(self.message)
+
+
 class MarketStatus(Enum):
     """Market status enumeration."""
     OPEN = "open"

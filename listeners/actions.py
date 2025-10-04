@@ -42,7 +42,7 @@ from models.user import User, UserRole, Permission
 from ui.trade_widget import TradeWidget, WidgetContext, WidgetState, UITheme
 from ui.notifications import NotificationService
 from utils.validators import validate_symbol, validate_quantity, validate_price, ValidationError
-from utils.formatters import format_currency, format_percentage
+from utils.formatters import format_money, format_percent
 from config.settings import get_config
 
 # Configure logging
@@ -904,8 +904,8 @@ class ActionHandler:
                 f"• Symbol: {trade.symbol}\n"
                 f"• Type: {trade.trade_type.value.title()}\n"
                 f"• Quantity: {trade.quantity:,}\n"
-                f"• Price: {format_currency(trade.price)}\n"
-                f"• Total Value: {format_currency(abs(trade.quantity * trade.price))}\n"
+                f"• Price: {format_money(trade.price)}\n"
+                f"• Total Value: {format_money(abs(trade.quantity * trade.price))}\n"
                 f"• Execution ID: {execution_result.execution_id}\n"
                 f"• Time: {trade.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
             )
@@ -935,7 +935,7 @@ class ActionHandler:
                 f"• Symbol: {trade.symbol}\n"
                 f"• Type: {trade.trade_type.value.title()}\n"
                 f"• Quantity: {trade.quantity:,}\n"
-                f"• Price: {format_currency(trade.price)}\n"
+                f"• Price: {format_money(trade.price)}\n"
                 f"• Error: {error_message}\n"
                 f"• Time: {trade.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
                 f"Please try again or contact support if the issue persists."

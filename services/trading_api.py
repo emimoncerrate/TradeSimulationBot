@@ -36,6 +36,16 @@ from models.trade import Trade, TradeStatus
 from services.market_data import MarketQuote, get_market_data_service
 
 
+class TradingError(Exception):
+    """Custom exception for trading API service errors."""
+    
+    def __init__(self, message: str, trade_id: str = None, error_code: str = None):
+        self.message = message
+        self.trade_id = trade_id
+        self.error_code = error_code
+        super().__init__(self.message)
+
+
 class OrderType(Enum):
     """Order type classifications."""
     MARKET = "market"
@@ -100,6 +110,27 @@ class OrderFill:
             'commission': float(self.commission),
             'total_value': float(self.total_value)
         }
+
+
+@dataclass
+class TradeExecution:
+    """Trade execution result."""
+    execution_id: str
+    trade_id: str
+    symbol: str
+    quantity: int
+    executed_price: Decimal
+    execution_time: datetime
+    status: OrderStatus
+    venue: ExecutionVenue
+    fees: Decimal = Decimal('0')
+    
+    def __post_init__(self):
+        """Validate execution data."""
+        if self.quantity <= 0:
+            raise ValueError("Quantity must be positive")
+        if self.executed_price <= 0:
+            raise ValueError("Executed price must be positive")
 
 
 @dataclass
