@@ -18,10 +18,13 @@ import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Dict, Any, Optional, List, Tuple, Union
+from typing import Dict, Any, Optional, List, Tuple, Union, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
 import json
+
+if TYPE_CHECKING:
+    from services.service_container import ServiceContainer
 
 from slack_bolt import App, Ack, BoltContext
 from slack_sdk import WebClient
@@ -33,6 +36,7 @@ from services.database import DatabaseService, DatabaseError, NotFoundError
 from services.market_data import MarketDataService, MarketDataError, MarketQuote
 from services.risk_analysis import RiskAnalysisService, RiskAnalysisError, RiskAnalysis
 from services.trading_api import TradingAPIService, TradingError, TradeExecution
+from services.service_container import ServiceContainer, get_container
 from models.trade import Trade, TradeType, TradeStatus, RiskLevel
 from models.user import User, UserRole, Permission
 from ui.trade_widget import TradeWidget, WidgetContext, WidgetState, UITheme
@@ -1010,49 +1014,63 @@ def initialize_action_handler(auth_service: AuthService, database_service: Datab
     logger.info("Action handler initialized globally")
 
 
-def register_action_handlers(app: App) -> None:
+def register_action_handlers(app: App, service_container: Optional['ServiceContainer'] = None) -> None:
     """
     Register all action handlers with the Slack app.
     
     Args:
         app: Slack Bolt application instance
+        service_container: Service container for dependency injection
     """
-    if not _action_handler:
-        raise RuntimeError("Action handler not initialized. Call initialize_action_handler() first.")
+    # Use provided service container or get global one
+    container = service_container or get_container()
+    
+    # Get services from container
+    auth_service = container.get(AuthService)
+    database_service = container.get(DatabaseService)
+    market_data_service = container.get(MarketDataService)
+    risk_analysis_service = container.get(RiskAnalysisService)
+    trading_api_service = container.get(TradingAPIService)
+    
+    # Create action handler
+    action_handler = ActionHandler(
+        auth_service, database_service, market_data_service,
+        risk_analysis_service, trading_api_service
+    )
     
     # Button action handlers
     @app.action("get_market_data")
     async def handle_get_market_data(ack, body, client, context):
         """Handle get market data button click."""
-        await _action_handler.process_action(
+        await action_handler.process_action(
             ActionType.GET_MARKET_DATA, body, client, ack, context
         )
     
     @app.action("analyze_risk")
     async def handle_analyze_risk(ack, body, client, context):
         """Handle analyze risk button click."""
-        await _action_handler.process_action(
+        await action_handler.process_action(
             ActionType.ANALYZE_RISK, body, client, ack, context
         )
     
     @app.action("refresh_data")
     async def handle_refresh_data(ack, body, client, context):
         """Handle refresh data button click."""
-        await _action_handler.process_action(
+        await action_handler.process_action(
             ActionType.REFRESH_DATA, body, client, ack, context
         )
     
     @app.action("view_details")
     async def handle_view_details(ack, body, client, context):
         """Handle view details button click."""
-        await _action_handler.process_action(
+        await action_handler.process_action(
             ActionType.VIEW_DETAILS, body, client, ack, context
         )
     
     @app.action("cancel_trade")
     async def handle_cancel_trade(ack, body, client, context):
         """Handle cancel trade button click."""
-        await _action_handler.process_action(
+        await action_handler.process_action(
             ActionType.CANCEL_TRADE, body, client, ack, context
         )
     
@@ -1060,14 +1078,14 @@ def register_action_handlers(app: App) -> None:
     @app.view("trade_modal")
     async def handle_trade_modal_submission(ack, body, client, context):
         """Handle trade modal form submission."""
-        await _action_handler.process_action(
+        await action_handler.process_action(
             ActionType.SUBMIT_TRADE, body, client, ack, context
         )
     
     @app.view("trade_confirmation_modal")
     async def handle_trade_confirmation_submission(ack, body, client, context):
         """Handle high-risk trade confirmation modal submission."""
-        await _action_handler.process_action(
+        await action_handler.process_action(
             ActionType.CONFIRM_HIGH_RISK, body, client, ack, context
         )
     
@@ -1082,7 +1100,11 @@ def register_action_handlers(app: App) -> None:
             callback_id=body.get('callback_id', 'unknown')
         )
     
-    logger.info("All action handlers registered successfully")
+    # Store handler globally for metrics access
+    global _action_handler
+    _action_handler = action_handler
+    
+    logger.info("All action handlers registered successfully with service container integration")
 
 
 def get_action_metrics() -> ActionMetrics:

@@ -16,10 +16,13 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
 import json
+
+if TYPE_CHECKING:
+    from services.service_container import ServiceContainer
 
 from slack_bolt import App, Ack, BoltContext
 from slack_sdk import WebClient
@@ -29,6 +32,7 @@ from slack_sdk.errors import SlackApiError
 from services.auth import AuthService, AuthenticationError, AuthorizationError, SessionError
 from services.database import DatabaseService, DatabaseError, NotFoundError
 from services.market_data import MarketDataService, MarketDataError
+from services.service_container import ServiceContainer, get_container
 from models.user import User, UserRole, Permission
 from models.trade import Trade, TradeStatus
 from models.portfolio import Position
@@ -821,48 +825,57 @@ def initialize_event_handler(auth_service: AuthService, database_service: Databa
     logger.info("Event handler initialized globally")
 
 
-def register_event_handlers(app: App) -> None:
+def register_event_handlers(app: App, service_container: Optional['ServiceContainer'] = None) -> None:
     """
     Register all event handlers with the Slack app.
     
     Args:
         app: Slack Bolt application instance
+        service_container: Service container for dependency injection
     """
-    if not _event_handler:
-        raise RuntimeError("Event handler not initialized. Call initialize_event_handler() first.")
+    # Use provided service container or get global one
+    container = service_container or get_container()
+    
+    # Get services from container
+    auth_service = container.get(AuthService)
+    database_service = container.get(DatabaseService)
+    market_data_service = container.get(MarketDataService)
+    
+    # Create event handler
+    event_handler = EventHandler(auth_service, database_service, market_data_service)
     
     @app.event("app_home_opened")
     async def handle_app_home_opened(event, client, context):
         """Handle when a user opens the App Home tab."""
-        await _event_handler.process_event(
+        await event_handler.process_event(
             EventType.APP_HOME_OPENED, event, client, context
         )
     
     @app.event("user_change")
     async def handle_user_change(event, client, context):
         """Handle user profile change events."""
-        await _event_handler.process_event(
+        await event_handler.process_event(
             EventType.USER_CHANGE, event, client, context
         )
     
     @app.event("team_join")
     async def handle_team_join(event, client, context):
         """Handle new team member join events."""
-        await _event_handler.process_event(
+        await event_handler.process_event(
             EventType.TEAM_JOIN, event, client, context
         )
     
     @app.event("member_joined_channel")
     async def handle_member_joined_channel(event, client, context):
         """Handle member joined channel events."""
-        await _event_handler.process_event(
+        await event_handler.process_event(
             EventType.MEMBER_JOINED_CHANNEL, event, client, context
         )
     
     @app.event("member_left_channel")
     async def handle_member_left_channel(event, client, context):
         """Handle member left channel events."""
-        await _event_handler.process_event(
+        await event_handler.process_event(
             EventType.MEMBER_LEFT_CHANNEL, event, client, context
         )
     
@@ -871,21 +884,21 @@ def register_event_handlers(app: App) -> None:
         """Handle message events for activity tracking."""
         # Only process messages in channels (not DMs) and ignore bot messages
         if event.get('channel_type') == 'channel' and not event.get('bot_id'):
-            await _event_handler.process_event(
+            await event_handler.process_event(
                 EventType.MESSAGE, event, client, context
             )
     
     @app.event("reaction_added")
     async def handle_reaction_added(event, client, context):
         """Handle reaction added events."""
-        await _event_handler.process_event(
+        await event_handler.process_event(
             EventType.REACTION_ADDED, event, client, context
         )
     
     @app.event("reaction_removed")
     async def handle_reaction_removed(event, client, context):
         """Handle reaction removed events."""
-        await _event_handler.process_event(
+        await event_handler.process_event(
             EventType.REACTION_REMOVED, event, client, context
         )
     
@@ -898,21 +911,24 @@ def register_event_handlers(app: App) -> None:
         user_id = body['user']['id']
         
         # Invalidate cache and trigger App Home refresh
-        if _event_handler:
-            _event_handler._invalidate_dashboard_cache(user_id)
-            
-            # Simulate app_home_opened event to refresh
-            fake_event = {
-                'user': user_id,
-                'team': body.get('team', {}).get('id', ''),
-                'event_ts': time.time()
-            }
-            
-            await _event_handler.process_event(
-                EventType.APP_HOME_OPENED, fake_event, client, context
-            )
+        event_handler._invalidate_dashboard_cache(user_id)
+        
+        # Simulate app_home_opened event to refresh
+        fake_event = {
+            'user': user_id,
+            'team': body.get('team', {}).get('id', ''),
+            'event_ts': time.time()
+        }
+        
+        await event_handler.process_event(
+            EventType.APP_HOME_OPENED, fake_event, client, context
+        )
     
-    logger.info("All event handlers registered successfully")
+    # Store handler globally for metrics access
+    global _event_handler
+    _event_handler = event_handler
+    
+    logger.info("All event handlers registered successfully with service container integration")
 
 
 def get_event_metrics() -> EventMetrics:

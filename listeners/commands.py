@@ -16,10 +16,13 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
 import json
+
+if TYPE_CHECKING:
+    from services.service_container import ServiceContainer
 
 from slack_bolt import App, Ack, BoltContext
 from slack_sdk import WebClient
@@ -28,6 +31,7 @@ from slack_sdk.errors import SlackApiError
 # Import our services and models
 from services.auth import AuthService, AuthenticationError, AuthorizationError, SessionError, RateLimitError, SecurityViolationError
 from services.database import DatabaseService, DatabaseError, NotFoundError, ConflictError
+from services.service_container import ServiceContainer, get_container
 from models.user import User, UserRole, Permission
 from ui.trade_widget import TradeWidget, WidgetContext, WidgetState, UITheme
 from utils.validators import validate_channel_id, validate_user_id, ValidationError
@@ -781,45 +785,57 @@ def initialize_command_handler(auth_service: AuthService, database_service: Data
     logger.info("Command handler initialized globally")
 
 
-def register_command_handlers(app: App) -> None:
+def register_command_handlers(app: App, service_container: Optional['ServiceContainer'] = None) -> None:
     """
     Register all command handlers with the Slack app.
     
     Args:
         app: Slack Bolt application instance
+        service_container: Service container for dependency injection
     """
-    if not _command_handler:
-        raise RuntimeError("Command handler not initialized. Call initialize_command_handler() first.")
+    # Use provided service container or get global one
+    container = service_container or get_container()
+    
+    # Get services from container
+    auth_service = container.get(AuthService)
+    database_service = container.get(DatabaseService)
+    
+    # Create command handler
+    command_handler = CommandHandler(auth_service, database_service)
     
     @app.command("/trade")
     async def handle_trade_command(ack, body, client, context):
         """Handle the /trade slash command."""
-        await _command_handler.process_command(
+        await command_handler.process_command(
             CommandType.TRADE, body, client, ack, context
         )
     
     @app.command("/portfolio")
     async def handle_portfolio_command(ack, body, client, context):
         """Handle the /portfolio slash command."""
-        await _command_handler.process_command(
+        await command_handler.process_command(
             CommandType.PORTFOLIO, body, client, ack, context
         )
     
     @app.command("/help")
     async def handle_help_command(ack, body, client, context):
         """Handle the /help slash command."""
-        await _command_handler.process_command(
+        await command_handler.process_command(
             CommandType.HELP, body, client, ack, context
         )
     
     @app.command("/status")
     async def handle_status_command(ack, body, client, context):
         """Handle the /status slash command."""
-        await _command_handler.process_command(
+        await command_handler.process_command(
             CommandType.STATUS, body, client, ack, context
         )
     
-    logger.info("All command handlers registered successfully")
+    # Store handler globally for metrics access
+    global _command_handler
+    _command_handler = command_handler
+    
+    logger.info("All command handlers registered successfully with service container integration")
 
 
 def get_command_metrics() -> CommandMetrics:
