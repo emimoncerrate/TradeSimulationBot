@@ -28,6 +28,7 @@ class TradeStatus(Enum):
     """Enumeration for trade status."""
     PENDING = "pending"
     EXECUTED = "executed"
+    PARTIALLY_FILLED = "partially_filled"
     FAILED = "failed"
     CANCELLED = "cancelled"
 

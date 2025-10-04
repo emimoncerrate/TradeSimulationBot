@@ -44,9 +44,9 @@
     - Implement integration tests with DynamoDB Local for full workflow testing
     - _Requirements: 6.1, 6.2, 6.3_
 
-- [ ] 4. Implement external service integrations
+- [x] 4. Implement external service integrations
 
-  - [ ] 4.1 Create market data service with Finnhub integration
+  - [x] 4.1 Create market data service with Finnhub integration
 
     - Implement MarketDataService class in services/market_data.py with API client, caching, and error handling
     - Add real-time price fetching, symbol validation, and market status checking
@@ -54,7 +54,7 @@
     - Add comprehensive logging and monitoring for API usage and performance
     - _Requirements: 10.1, 10.2, 10.3, 10.4_
 
-  - [ ] 4.2 Implement AI-powered risk analysis service
+  - [x] 4.2 Implement AI-powered risk analysis service
 
     - Create RiskAnalysisService class in services/risk_analysis.py with Amazon Bedrock Claude integration
     - Implement trade risk assessment, portfolio impact analysis, and recommendation generation
@@ -62,7 +62,7 @@
     - Implement caching, error handling, and fallback strategies for AI service unavailability
     - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-  - [ ] 4.3 Create mock trading system integration
+  - [x] 4.3 Create mock trading system integration
     - Implement TradingAPIService class in services/trading_api.py with mock execution system
     - Add trade execution simulation, order management, and execution confirmation
     - Implement realistic execution delays, partial fills, and market impact simulation
