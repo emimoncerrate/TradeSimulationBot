@@ -1,0 +1,38 @@
+# Ignore sensitive files
+.env
+.env.local
+.env.production
+
+# Ignore development files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Ignore git and IDE files
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Ignore documentation
+README.md
+docs/
+*.md
+
+# Ignore logs
+*.log
+logs/
+
+# Ignore temporary files
+tmp/
+temp/
+.DS_Store
+Thumbs.db

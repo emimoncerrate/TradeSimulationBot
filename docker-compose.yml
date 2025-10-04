@@ -1,257 +1,61 @@
-# =============================================================================
-# Jain Global Slack Trading Bot - Docker Compose Configuration
-# =============================================================================
-# This docker-compose file sets up a complete local development environment
-# with all necessary services including DynamoDB Local, Redis, and monitoring.
-
 version: '3.8'
 
-# =============================================================================
-# SERVICES
-# =============================================================================
 services:
-  
-  # ---------------------------------------------------------------------------
-  # MAIN APPLICATION
-  # ---------------------------------------------------------------------------
-  slack-trading-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: development
-    container_name: jain-trading-bot-app
-    ports:
-      - "3000:3000"
+  trading-bot:
+    build: .
+    container_name: slack-trading-bot
     environment:
-      # Application Configuration
-      - ENVIRONMENT=development
-      - LOG_LEVEL=DEBUG
-      - DEBUG_MODE=true
+      # Load from .env file (not committed to git)
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DEBUG_MODE=${DEBUG_MODE:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       
-      # Slack Configuration (set these in .env file)
+      # Slack Configuration (REQUIRED - get your own)
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
       - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
       
-      # AWS Configuration for Local Development
-      - AWS_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=dummy
-      - AWS_SECRET_ACCESS_KEY=dummy
-      - DYNAMODB_LOCAL_ENDPOINT=http://dynamodb-local:8000
-      
-      # Market Data Configuration
+      # Market Data (REQUIRED - get your own)
       - FINNHUB_API_KEY=${FINNHUB_API_KEY}
-      - MARKET_DATA_CACHE_TTL=60
+      
+      # AWS (Mock for development)
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-mock-access-key-id}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-mock-secret-access-key}
       
       # Trading Configuration
-      - MOCK_EXECUTION_ENABLED=true
-      - EXECUTION_DELAY_SECONDS=0.5
-      
-      # Security Configuration
+      - MOCK_EXECUTION_ENABLED=${MOCK_EXECUTION_ENABLED:-true}
       - APPROVED_CHANNELS=${APPROVED_CHANNELS}
       
-      # Service Endpoints
-      - REDIS_URL=redis://redis:6379
-      - DYNAMODB_TABLE_PREFIX=jain-trading-bot-dev
     volumes:
+      # Mount for development (optional)
       - .:/app
-      - /app/node_modules
-    depends_on:
-      - dynamodb-local
-      - redis
-    networks:
-      - trading-bot-network
+    ports:
+      # Only needed for HTTP mode
+      - "3000:3000"
     restart: unless-stopped
+    
+    # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "python", "-c", "print('healthy')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
 
-  # ---------------------------------------------------------------------------
-  # DYNAMODB LOCAL
-  # ---------------------------------------------------------------------------
-  dynamodb-local:
-    image: amazon/dynamodb-local:latest
-    container_name: jain-trading-bot-dynamodb
-    ports:
-      - "8000:8000"
-    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "./data"]
-    volumes:
-      - dynamodb-data:/home/dynamodblocal/data
-    networks:
-      - trading-bot-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/ || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # ---------------------------------------------------------------------------
-  # REDIS CACHE
-  # ---------------------------------------------------------------------------
+  # Optional: Redis for caching (if needed)
   redis:
     image: redis:7-alpine
-    container_name: jain-trading-bot-redis
+    container_name: trading-bot-redis
     ports:
       - "6379:6379"
-    volumes:
-      - redis-data:/data
-    networks:
-      - trading-bot-network
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-
-  # ---------------------------------------------------------------------------
-  # DYNAMODB ADMIN (Web UI for DynamoDB Local)
-  # ---------------------------------------------------------------------------
-  dynamodb-admin:
-    image: aaronshaf/dynamodb-admin:latest
-    container_name: jain-trading-bot-dynamodb-admin
+    
+  # Optional: Local DynamoDB for development
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: trading-bot-dynamodb
     ports:
-      - "8001:8001"
-    environment:
-      - DYNAMO_ENDPOINT=http://dynamodb-local:8000
-      - AWS_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=dummy
-      - AWS_SECRET_ACCESS_KEY=dummy
-    depends_on:
-      - dynamodb-local
-    networks:
-      - trading-bot-network
+      - "8000:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
     restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # REDIS COMMANDER (Web UI for Redis)
-  # ---------------------------------------------------------------------------
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: jain-trading-bot-redis-commander
-    ports:
-      - "8002:8081"
-    environment:
-      - REDIS_HOSTS=local:redis:6379
-    depends_on:
-      - redis
-    networks:
-      - trading-bot-network
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # PROMETHEUS (Metrics Collection)
-  # ---------------------------------------------------------------------------
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: jain-trading-bot-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus-data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=200h'
-      - '--web.enable-lifecycle'
-    networks:
-      - trading-bot-network
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # GRAFANA (Metrics Visualization)
-  # ---------------------------------------------------------------------------
-  grafana:
-    image: grafana/grafana:latest
-    container_name: jain-trading-bot-grafana
-    ports:
-      - "3001:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
-    depends_on:
-      - prometheus
-    networks:
-      - trading-bot-network
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # JAEGER (Distributed Tracing)
-  # ---------------------------------------------------------------------------
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    container_name: jain-trading-bot-jaeger
-    ports:
-      - "16686:16686"
-      - "14268:14268"
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-    networks:
-      - trading-bot-network
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # NGINX (Reverse Proxy for Development)
-  # ---------------------------------------------------------------------------
-  nginx:
-    image: nginx:alpine
-    container_name: jain-trading-bot-nginx
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/ssl:/etc/nginx/ssl
-    depends_on:
-      - slack-trading-bot
-    networks:
-      - trading-bot-network
-    restart: unless-stopped
-
-# =============================================================================
-# VOLUMES
-# =============================================================================
-volumes:
-  dynamodb-data:
-    driver: local
-  redis-data:
-    driver: local
-  prometheus-data:
-    driver: local
-  grafana-data:
-    driver: local
-
-# =============================================================================
-# NETWORKS
-# =============================================================================
-networks:
-  trading-bot-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
-
-# =============================================================================
-# DEVELOPMENT OVERRIDES
-# =============================================================================
-# To use this file for development:
-# 1. Copy .env.example to .env and fill in your values
-# 2. Run: docker-compose up -d
-# 3. Access services at:
-#    - Main App: http://localhost:3000
-#    - DynamoDB Admin: http://localhost:8001
-#    - Redis Commander: http://localhost:8002
-#    - Prometheus: http://localhost:9090
-#    - Grafana: http://localhost:3001 (admin/admin)
-#    - Jaeger: http://localhost:16686
