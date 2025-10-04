@@ -778,3 +778,156 @@ def format_trade_message(trade_data: Dict[str, Any], **kwargs) -> str:
 def format_portfolio_message(portfolio_data: Dict[str, Any], **kwargs) -> str:
     """Convenience function for formatting portfolio messages."""
     return SlackMessageFormatter.format_portfolio_summary(portfolio_data, **kwargs)
+
+def mask_sensitive_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Mask sensitive data for display purposes.
+    
+    Args:
+        data: Dictionary containing sensitive data
+        
+    Returns:
+        Dictionary with sensitive data masked
+    """
+    from utils.validators import identify_pii_fields
+    
+    masked_data = data.copy()
+    pii_fields = identify_pii_fields(data)
+    
+    for field in pii_fields:
+        if field in masked_data and isinstance(masked_data[field], str):
+            masked_data[field] = mask_pii_data({field: masked_data[field]})[field]
+    
+    return masked_data
+
+
+def mask_pii_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Mask PII data for safe display.
+    
+    Args:
+        data: Dictionary containing PII data
+        
+    Returns:
+        Dictionary with PII data masked
+    """
+    masked_data = {}
+    
+    for field, value in data.items():
+        if not isinstance(value, str):
+            masked_data[field] = value
+            continue
+            
+        field_lower = field.lower()
+        
+        if 'email' in field_lower:
+            # Mask email: john.doe@example.com -> j***@example.com
+            if '@' in value:
+                local, domain = value.split('@', 1)
+                if len(local) > 1:
+                    masked_local = local[0] + '*' * (len(local) - 1)
+                else:
+                    masked_local = '*'
+                masked_data[field] = f"{masked_local}@{domain}"
+            else:
+                masked_data[field] = '*' * len(value)
+                
+        elif 'phone' in field_lower:
+            # Mask phone: +1-555-123-4567 -> +1-555-***-4567
+            if len(value) >= 4:
+                masked_data[field] = value[:-4].replace(value[-8:-4], '***') + value[-4:]
+            else:
+                masked_data[field] = '*' * len(value)
+                
+        elif 'ssn' in field_lower or 'social' in field_lower:
+            # Mask SSN: 123-45-6789 -> ***-**-6789
+            if len(value) >= 4:
+                masked_data[field] = 'xxx-xx-' + value[-4:]
+            else:
+                masked_data[field] = '*' * len(value)
+                
+        elif 'credit' in field_lower or 'card' in field_lower:
+            # Mask credit card: 4532-1234-5678-9012 -> ****-****-****-9012
+            if len(value) >= 4:
+                masked_data[field] = '*' * (len(value) - 4) + value[-4:]
+            else:
+                masked_data[field] = '*' * len(value)
+                
+        elif 'address' in field_lower:
+            # Mask address: keep city/state, mask street
+            parts = value.split(',')
+            if len(parts) > 1:
+                masked_parts = ['***'] + parts[1:]
+                masked_data[field] = ','.join(masked_parts)
+            else:
+                masked_data[field] = '***'
+                
+        else:
+            # Generic masking for other PII
+            if len(value) > 4:
+                masked_data[field] = value[:2] + '*' * (len(value) - 4) + value[-2:]
+            else:
+                masked_data[field] = '*' * len(value)
+    
+    return masked_data
+
+
+def sanitize_log_data(log_message: str) -> str:
+    """
+    Sanitize log data to remove PII.
+    
+    Args:
+        log_message: Log message that may contain PII
+        
+    Returns:
+        Sanitized log message
+    """
+    # Common PII patterns to remove/mask
+    patterns = [
+        (r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[EMAIL_REDACTED]'),
+        (r'\b\d{3}-\d{2}-\d{4}\b', '[SSN_REDACTED]'),
+        (r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b', '[CARD_REDACTED]'),
+        (r'\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', '[PHONE_REDACTED]'),
+        (r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', '[IP_REDACTED]')
+    ]
+    
+    sanitized = log_message
+    for pattern, replacement in patterns:
+        sanitized = re.sub(pattern, replacement, sanitized)
+    
+    return sanitized
+
+
+def format_audit_log(event_type: str, user_id: str, details: Dict[str, Any], 
+                    timestamp: Optional[datetime] = None) -> Dict[str, Any]:
+    """
+    Format audit log entry.
+    
+    Args:
+        event_type: Type of event being logged
+        user_id: User ID associated with the event
+        details: Event details
+        timestamp: Event timestamp
+        
+    Returns:
+        Formatted audit log entry
+    """
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc)
+    
+    # Sanitize details to remove PII
+    sanitized_details = {}
+    for key, value in details.items():
+        if isinstance(value, str):
+            sanitized_details[key] = sanitize_log_data(value)
+        else:
+            sanitized_details[key] = value
+    
+    return {
+        'timestamp': timestamp.isoformat(),
+        'event_type': event_type,
+        'user_id': user_id,
+        'details': sanitized_details,
+        'log_level': 'INFO',
+        'source': 'slack_trading_bot'
+    }
