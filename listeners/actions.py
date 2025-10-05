@@ -14,6 +14,7 @@ detailed audit trails and providing rich user feedback throughout the process.
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -1089,16 +1090,8 @@ def register_action_handlers(app: App, service_container: Optional['ServiceConta
             ActionType.CONFIRM_HIGH_RISK, body, client, ack, context
         )
     
-    # Generic action handler for any unhandled actions
-    @app.action({"action_id": {"type": "regex", "pattern": r".*"}})
-    async def handle_generic_action(ack, body, client, context):
-        """Handle any unhandled actions."""
-        ack()
-        logger.warning(
-            "Unhandled action received",
-            action_id=body.get('actions', [{}])[0].get('action_id', 'unknown'),
-            callback_id=body.get('callback_id', 'unknown')
-        )
+    # Note: Generic catch-all handler removed to prevent conflicts with specific handlers
+    # Specific action handlers are registered in their respective modules
     
     # Store handler globally for metrics access
     global _action_handler
