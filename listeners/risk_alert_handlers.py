@@ -48,7 +48,6 @@ def register_risk_alert_handlers(
     
     # ========== Slash Commands ==========
     
-    @app.command("/risk-alert")
     async def handle_risk_alert_command(ack: Ack, command: Dict, client: WebClient):
         """Handle /risk-alert command - opens configuration modal."""
         await ack()
@@ -82,7 +81,6 @@ def register_risk_alert_handlers(
                 text=f"❌ Error opening risk alert configuration: {str(e)}"
             )
     
-    @app.command("/risk-alerts")
     async def handle_list_alerts_command(ack: Ack, command: Dict, client: WebClient):
         """Handle /risk-alerts command - lists user's alerts."""
         await ack()
@@ -116,7 +114,6 @@ def register_risk_alert_handlers(
     
     # ========== Modal Submissions ==========
     
-    @app.view("risk_alert_setup")
     async def handle_risk_alert_submission(ack: Ack, body: Dict, view: Dict, client: WebClient):
         """Handle risk alert modal submission."""
         
@@ -213,7 +210,6 @@ def register_risk_alert_handlers(
     
     # ========== Interactive Actions ==========
     
-    @app.action("view_all_alerts")
     async def handle_view_all_alerts(ack: Ack, body: Dict, client: WebClient):
         """Handle 'View All Alerts' button click."""
         await ack()
@@ -239,7 +235,6 @@ def register_risk_alert_handlers(
         except Exception as e:
             logger.error(f"Error viewing all alerts: {str(e)}", exc_info=True)
     
-    @app.action("create_new_alert")
     async def handle_create_new_alert(ack: Ack, body: Dict, client: WebClient):
         """Handle 'Create Another' button click."""
         await ack()
@@ -255,7 +250,6 @@ def register_risk_alert_handlers(
         except Exception as e:
             logger.error(f"Error creating new alert: {str(e)}", exc_info=True)
     
-    @app.action({"action_id": {"type": "regex", "pattern": r"^alert_menu_.*"}})
     async def handle_alert_menu(ack: Ack, body: Dict, action: Dict, client: WebClient):
         """Handle alert overflow menu actions."""
         await ack()
@@ -279,7 +273,6 @@ def register_risk_alert_handlers(
         except Exception as e:
             logger.error(f"Error handling alert menu: {str(e)}", exc_info=True)
     
-    @app.action({"action_id": {"type": "regex", "pattern": r"^pause_alert_.*"}})
     async def handle_pause_alert_button(ack: Ack, body: Dict, action: Dict, client: WebClient):
         """Handle 'Pause Alert' button from notification."""
         await ack()
@@ -393,6 +386,19 @@ def register_risk_alert_handlers(
             
         except Exception as e:
             logger.error(f"Error deleting alert: {str(e)}", exc_info=True)
+    
+    # Manually register the command handlers
+    app.command("/risk-alert")(handle_risk_alert_command)
+    app.command("/risk-alerts")(handle_list_alerts_command)
+    
+    # Manually register view handlers
+    app.view("risk_alert_setup")(handle_risk_alert_submission)
+    
+    # Manually register action handlers
+    app.action("view_all_alerts")(handle_view_all_alerts)
+    app.action("create_new_alert")(handle_create_new_alert)
+    app.action({"action_id": {"type": "regex", "pattern": r"^alert_menu_.*"}})(handle_alert_menu)
+    app.action({"action_id": {"type": "regex", "pattern": r"^pause_alert_.*"}})(handle_pause_alert_button)
     
     logger.info("Risk alert handlers registered successfully")
 
