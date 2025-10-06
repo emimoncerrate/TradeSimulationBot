@@ -1111,7 +1111,7 @@ class AuthService:
         try:
             # This would typically store in a security events table
             # For now, we'll use the audit logging functionality
-            await self.db._log_audit_event(
+            self.db._log_audit_event(
                 event['event_type'],
                 event['user_id'],
                 event['details']

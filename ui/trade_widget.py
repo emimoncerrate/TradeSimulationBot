@@ -197,12 +197,11 @@ class TradeWidget:
                 })
             }
             
-            # Add submit button if appropriate
-            if self._should_show_submit_button(context):
-                modal["submit"] = {
-                    "type": "plain_text",
-                    "text": modal_config['submit_text']
-                }
+            # Add submit button - required when input blocks are present
+            modal["submit"] = {
+                "type": "plain_text",
+                "text": modal_config['submit_text'] if self._should_show_submit_button(context) else "Continue"
+            }
             
             # Add notification text for accessibility
             if self.accessibility_enabled:
@@ -580,27 +579,31 @@ class TradeWidget:
         action_elements = []
         
         # Market data button
-        action_elements.append({
+        market_data_button = {
             "type": "button",
             "text": {
                 "type": "plain_text",
                 "text": "📊 Get Market Data"
             },
-            "action_id": "get_market_data",
-            "style": "primary" if not context.market_quote else None
-        })
+            "action_id": "get_market_data"
+        }
+        if not context.market_quote:
+            market_data_button["style"] = "primary"
+        action_elements.append(market_data_button)
         
         # Risk analysis button (only if market data is available)
         if context.market_quote:
-            action_elements.append({
+            risk_button = {
                 "type": "button",
                 "text": {
                     "type": "plain_text",
                     "text": "🔍 Analyze Risk"
                 },
-                "action_id": "analyze_risk",
-                "style": "primary" if not context.risk_analysis else None
-            })
+                "action_id": "analyze_risk"
+            }
+            if not context.risk_analysis:
+                risk_button["style"] = "primary"
+            action_elements.append(risk_button)
         
         if action_elements:
             blocks.append({

@@ -800,15 +800,76 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
     auth_service = container.get(AuthService)
     database_service = container.get(DatabaseService)
     
-    # Create command handler
+    # Create command handler for non-trade commands
     command_handler = CommandHandler(auth_service, database_service)
     
-    @app.command("/trade")
-    async def handle_trade_command(ack, body, client, context):
-        """Handle the /trade slash command."""
-        await command_handler.process_command(
-            CommandType.TRADE, body, client, ack, context
-        )
+    # ========================================
+    # ENHANCED /TRADE COMMAND WITH LIVE MARKET DATA
+    # ========================================
+    try:
+        from services.market_data import MarketDataService
+        from listeners.enhanced_trade_command import EnhancedTradeCommand
+        from listeners.enhanced_market_actions import EnhancedMarketActions
+        
+        # Get market data service
+        market_data_service = container.get(MarketDataService)
+        
+        # Create enhanced trade command
+        enhanced_trade_command = EnhancedTradeCommand(market_data_service, auth_service)
+        
+        logger.info("✅ Enhanced trade command created successfully")
+        
+        # Register the enhanced trade command
+        @app.command("/trade")
+        def handle_enhanced_trade_command(ack, body, client, context):
+            """Handle the enhanced /trade slash command with live market data."""
+            ack()  # Acknowledge immediately
+            
+            # Run the async command in a thread
+            import threading
+            import asyncio
+            
+            def run_async_command():
+                try:
+                    # Create new event loop for this thread
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    # Create a mock ack function since we already acknowledged
+                    def mock_ack():
+                        pass
+                    
+                    # Run the async command
+                    loop.run_until_complete(
+                        enhanced_trade_command.handle_trade_command(mock_ack, body, client, context)
+                    )
+                except Exception as e:
+                    logger.error(f"Enhanced trade command error: {e}")
+                finally:
+                    loop.close()
+            
+            # Start the async command in a separate thread
+            thread = threading.Thread(target=run_async_command)
+            thread.start()
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to create enhanced trade command: {e}")
+        # Fall back to original trade command
+        @app.command("/trade")
+        async def handle_fallback_trade_command(ack, body, client, context):
+            """Fallback trade command handler."""
+            await command_handler.process_command(
+                CommandType.TRADE, body, client, ack, context
+            )
+        logger.info("⚠️ Using fallback trade command")
+        return
+    
+    # Register enhanced market data action handlers using the dedicated registration function
+    from listeners.enhanced_market_actions import register_enhanced_market_actions
+    register_enhanced_market_actions(app, enhanced_trade_command)
+    
+    logger.info("✅ Enhanced /trade command with live market data registered successfully")
+    logger.info("🎯 Enhanced features available: live market data, auto-refresh, interactive controls")
     
     @app.command("/portfolio")
     async def handle_portfolio_command(ack, body, client, context):

@@ -151,6 +151,8 @@ class DatabaseService:
     
     def _use_mock_mode(self) -> None:
         """Initialize mock database for development."""
+        from models.user import User, UserRole, UserStatus, UserProfile
+        
         self.mock_data = {
             'users': {},
             'trades': {},
@@ -158,24 +160,78 @@ class DatabaseService:
             'portfolios': {}
         }
         self.is_mock_mode = True
+        
+        # Create a default test user for development
+        test_profile = UserProfile(
+            display_name="Test User",
+            email="test@example.com",
+            department="Trading"
+        )
+        
+        test_user = User(
+            user_id="test-user-123",
+            slack_user_id="U08GVN6F4FQ",  # The user ID from the error
+            role=UserRole.EXECUTION_TRADER,
+            profile=test_profile,
+            status=UserStatus.ACTIVE
+        )
+        
+        # Store the test user
+        self.mock_data['users']['test-user-123'] = test_user
+        
         logger.info("DatabaseService initialized in MOCK MODE for development")
         
         # Override methods with mock implementations
         self.get_user = self._mock_get_user
+        self.get_user_by_slack_id = self._mock_get_user_by_slack_id
         self.create_user = self._mock_create_user
+        self.update_user = self._mock_update_user
+        self.get_users_by_role = self._mock_get_users_by_role
+        self.get_users_by_portfolio_manager = self._mock_get_users_by_portfolio_manager
         self.get_trade = self._mock_get_trade
         self.log_trade = self._mock_log_trade
         self.get_user_positions = self._mock_get_user_positions
         self.update_position = self._mock_update_position
+        self._log_audit_event = self._mock_log_audit_event
     
     async def _mock_get_user(self, user_id: str) -> Optional[User]:
         """Mock implementation for get_user."""
         return self.mock_data['users'].get(user_id)
     
+    async def _mock_get_user_by_slack_id(self, slack_user_id: str) -> Optional[User]:
+        """Mock implementation for get_user_by_slack_id."""
+        # Search through users to find one with matching slack_user_id
+        for user in self.mock_data['users'].values():
+            if hasattr(user, 'slack_user_id') and user.slack_user_id == slack_user_id:
+                return user
+        return None
+    
     async def _mock_create_user(self, user: User) -> bool:
         """Mock implementation for create_user."""
         self.mock_data['users'][user.user_id] = user
         return True
+    
+    async def _mock_update_user(self, user: User) -> bool:
+        """Mock implementation for update_user."""
+        self.mock_data['users'][user.user_id] = user
+        return True
+    
+    async def _mock_get_users_by_role(self, role) -> List:
+        """Mock implementation for get_users_by_role."""
+        from models.user import UserRole
+        if isinstance(role, str):
+            role = UserRole(role)
+        return [user for user in self.mock_data['users'].values() if user.role == role]
+    
+    async def _mock_get_users_by_portfolio_manager(self, pm_id: str) -> List:
+        """Mock implementation for get_users_by_portfolio_manager."""
+        return [user for user in self.mock_data['users'].values() 
+                if user.portfolio_manager_id == pm_id]
+    
+    def _mock_log_audit_event(self, event_type: str, user_id: str, details: dict) -> None:
+        """Mock implementation for _log_audit_event."""
+        # Just log it, don't store anything
+        logger.info(f"Mock audit event: {event_type} for user {user_id}: {details}")
     
     async def _mock_get_trade(self, user_id: str, trade_id: str) -> Optional[Trade]:
         """Mock implementation for get_trade."""

@@ -700,7 +700,7 @@ class NotificationService:
             
             self.user_preferences[user_id] = current_prefs
             
-            self.logger.info("User preferences updated", user_id=user_id)
+            self.logger.info(f"User preferences updated for user {user_id}")
             
         except Exception as e:
             self.logger.error("Failed to update user preferences", error=str(e))
@@ -794,7 +794,7 @@ class NotificationService:
         """Queue notification for delivery."""
         # Check rate limits
         if not self._check_rate_limits(notification.user_id):
-            self.logger.warning("Rate limit exceeded for user", user_id=notification.user_id)
+            self.logger.warning(f"Rate limit exceeded for user {notification.user_id}")
             return
         
         # Check quiet hours
