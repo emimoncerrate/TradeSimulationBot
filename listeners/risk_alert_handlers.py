@@ -55,7 +55,7 @@ def register_risk_alert_handlers(
         
         try:
             # Check if user is authorized (Portfolio Manager or Admin)
-            user = await auth_service.get_user(command['user_id'])
+            user = await db_service.get_user_by_slack_id(command['user_id'])
             
             if not user or user.role not in [UserRole.PORTFOLIO_MANAGER, UserRole.ADMIN]:
                 await client.chat_postEphemeral(
