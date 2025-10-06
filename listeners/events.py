@@ -12,6 +12,7 @@ data updates while maintaining detailed audit trails and providing rich user exp
 """
 
 import asyncio
+from utils.async_compat import to_thread
 import logging
 import time
 import uuid
@@ -576,7 +577,7 @@ class EventHandler:
     async def _publish_app_home(self, client: WebClient, user_id: str, view: Dict[str, Any]) -> None:
         """Publish view to App Home."""
         try:
-            await asyncio.to_thread(
+            await to_thread(
                 client.views_publish,
                 user_id=user_id,
                 view=view
@@ -655,7 +656,7 @@ class EventHandler:
             # Send onboarding welcome message
             welcome_message = self._build_onboarding_message(event_context.user)
             
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postMessage,
                 channel=event_context.user_id,  # DM to user
                 text=welcome_message
@@ -721,7 +722,7 @@ class EventHandler:
                 "Your account will be set up shortly. Contact your administrator if you need immediate access."
             )
             
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postMessage,
                 channel=user_id,
                 text=message
@@ -742,7 +743,7 @@ class EventHandler:
                 f"Use `/help` for more information about available commands."
             )
             
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postMessage,
                 channel=event_context.channel_id,
                 text=message

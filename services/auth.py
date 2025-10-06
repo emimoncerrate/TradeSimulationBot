@@ -23,6 +23,9 @@ import boto3
 from botocore.exceptions import ClientError
 import backoff
 
+# Python 3.8 compatibility
+from utils.async_compat import to_thread
+
 # Import Slack SDK components
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -443,7 +446,7 @@ class AuthService:
             User information from Slack API
         """
         try:
-            response = await asyncio.to_thread(
+            response = await to_thread(
                 self.slack_client.users_info,
                 user=slack_user_id
             )
@@ -856,7 +859,7 @@ class AuthService:
         
         try:
             # Get channel info from Slack API
-            response = await asyncio.to_thread(
+            response = await to_thread(
                 self.slack_client.conversations_info,
                 channel=channel_id
             )

@@ -13,6 +13,7 @@ detailed audit trails and providing rich user feedback throughout the process.
 """
 
 import asyncio
+from utils.async_compat import to_thread
 import logging
 import re
 import time
@@ -734,7 +735,7 @@ class ActionHandler:
             await self._close_modal(client, action_context.view_id)
             
             # Send cancellation message
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postEphemeral,
                 channel=action_context.channel_id,
                 user=action_context.slack_user_id,
@@ -779,7 +780,7 @@ class ActionHandler:
             )
             
             # Could implement detailed view modal here
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postEphemeral,
                 channel=action_context.channel_id,
                 user=action_context.slack_user_id,
@@ -883,7 +884,7 @@ class ActionHandler:
     async def _update_modal(self, client: WebClient, view_id: str, modal: Dict[str, Any]) -> None:
         """Update existing modal."""
         try:
-            await asyncio.to_thread(
+            await to_thread(
                 client.views_update,
                 view_id=view_id,
                 view=modal
@@ -895,7 +896,7 @@ class ActionHandler:
     async def _close_modal(self, client: WebClient, view_id: str) -> None:
         """Close modal."""
         try:
-            await asyncio.to_thread(
+            await to_thread(
                 client.views_update,
                 view_id=view_id,
                 view={"type": "modal", "close": {"type": "plain_text", "text": "Close"}}
@@ -919,7 +920,7 @@ class ActionHandler:
                 f"• Time: {trade.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
             )
             
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postEphemeral,
                 channel=action_context.channel_id,
                 user=action_context.slack_user_id,
@@ -950,7 +951,7 @@ class ActionHandler:
                 f"Please try again or contact support if the issue persists."
             )
             
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postEphemeral,
                 channel=action_context.channel_id,
                 user=action_context.slack_user_id,
@@ -968,7 +969,7 @@ class ActionHandler:
                 logger.error("Cannot send error response: missing action context or channel")
                 return
             
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postEphemeral,
                 channel=action_context.channel_id,
                 user=action_context.slack_user_id,

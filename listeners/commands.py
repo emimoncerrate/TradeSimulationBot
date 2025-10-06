@@ -12,6 +12,7 @@ maintaining detailed audit trails for compliance requirements.
 """
 
 import asyncio
+from utils.async_compat import to_thread
 import logging
 import time
 import uuid
@@ -510,7 +511,7 @@ class CommandHandler:
             modal = self.trade_widget.create_trade_modal(widget_context)
             
             # Open modal
-            await asyncio.to_thread(
+            await to_thread(
                 client.views_open,
                 trigger_id=command_context.trigger_id,
                 view=modal
@@ -547,7 +548,7 @@ class CommandHandler:
                 )
             
             # Send message directing user to App Home
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postEphemeral,
                 channel=command_context.channel_id,
                 user=command_context.slack_user_id,
@@ -572,7 +573,7 @@ class CommandHandler:
             # Build help message based on user role
             help_text = self._build_help_message(command_context.user)
             
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postEphemeral,
                 channel=command_context.channel_id,
                 user=command_context.slack_user_id,
@@ -595,7 +596,7 @@ class CommandHandler:
             # Build status message
             status_text = self._build_status_message(command_context.user)
             
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postEphemeral,
                 channel=command_context.channel_id,
                 user=command_context.slack_user_id,
@@ -735,7 +736,7 @@ class CommandHandler:
                 logger.error("Cannot send error response: missing command context")
                 return
             
-            await asyncio.to_thread(
+            await to_thread(
                 client.chat_postEphemeral if ephemeral else client.chat_postMessage,
                 channel=command_context.channel_id,
                 user=command_context.slack_user_id,
