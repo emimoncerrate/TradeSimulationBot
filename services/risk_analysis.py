@@ -344,7 +344,12 @@ class RiskAnalysisService:
         """Initialize async resources and AWS clients."""
         try:
             # Check if we should use mock mode for development
-            if os.getenv('ENVIRONMENT') == 'development' and os.getenv('AWS_ACCESS_KEY_ID') == 'mock-access-key-id':
+            # Use mock mode if: in development AND (no AWS creds OR placeholder AWS creds)
+            aws_key = os.getenv('AWS_ACCESS_KEY_ID', '')
+            is_development = os.getenv('ENVIRONMENT', 'development') == 'development'
+            has_placeholder_aws = aws_key in ['', 'mock-access-key-id', 'your-aws-access-key']
+            
+            if is_development and has_placeholder_aws:
                 self.logger.info("RiskAnalysisService initialized in MOCK MODE for development")
                 self.is_mock_mode = True
                 return
@@ -361,8 +366,14 @@ class RiskAnalysisService:
             self.logger.info("RiskAnalysisService initialization complete")
             
         except Exception as e:
-            self.logger.error("Failed to initialize RiskAnalysisService", error=str(e))
-            raise e
+            # If connection fails in development, fall back to mock mode
+            if is_development:
+                self.logger.warning(f"Failed to connect to AWS Bedrock, falling back to mock mode: {e}")
+                self.is_mock_mode = True
+            else:
+                # In production, fail loudly
+                self.logger.error("Failed to initialize RiskAnalysisService", error=str(e))
+                raise e
     
     async def cleanup(self) -> None:
         """Clean up resources."""

@@ -49,6 +49,9 @@ services:
     container_name: trading-bot-redis
     ports:
       - "6379:6379"
+    volumes:
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
     restart: unless-stopped
     
   # Optional: Local DynamoDB for development

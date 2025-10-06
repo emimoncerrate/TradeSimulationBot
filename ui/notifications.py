@@ -521,6 +521,157 @@ class NotificationService:
             self.logger.error("Failed to send system notification", error=str(e))
             raise e
     
+    async def send_single_trade_alert(
+        self,
+        manager_id: str,
+        alert: 'RiskAlertConfig',
+        trade: Trade,
+        metrics: Dict[str, Any]
+    ) -> str:
+        """
+        Send alert notification for a single trade matching criteria.
+        
+        Args:
+            manager_id: Manager's Slack user ID
+            alert: Alert configuration
+            trade: Trade that triggered the alert
+            metrics: Trade metrics (size, loss, VIX, etc.)
+            
+        Returns:
+            Notification ID
+        """
+        try:
+            from ui.risk_alert_widget import create_alert_triggered_message
+            
+            # Create alert message
+            message = create_alert_triggered_message(alert, trade, metrics)
+            
+            notification = NotificationMessage(
+                notification_id=f"alert_{alert.alert_id}_{trade.trade_id}_{int(datetime.utcnow().timestamp())}",
+                user_id=manager_id,
+                notification_type=NotificationType.HIGH_RISK_ALERT,
+                priority=NotificationPriority.URGENT,
+                title=f"🚨 Risk Alert: {alert.name or 'Trade Alert'}",
+                message=f"Trade {trade.symbol} matches your risk alert criteria",
+                blocks=message['blocks'],
+                channels=[DeliveryChannel.SLACK_DM],
+                context={
+                    'alert_id': alert.alert_id,
+                    'trade_id': trade.trade_id,
+                    'metrics': metrics
+                }
+            )
+            
+            await self._queue_notification(notification)
+            
+            self.logger.info("Risk alert notification queued",
+                           manager_id=manager_id,
+                           alert_id=alert.alert_id,
+                           trade_id=trade.trade_id)
+            
+            return notification.notification_id
+            
+        except Exception as e:
+            self.logger.error("Failed to send risk alert notification", error=str(e))
+            raise e
+    
+    async def send_risk_alert_summary(
+        self,
+        manager_id: str,
+        alert: 'RiskAlertConfig',
+        trades: List[Trade],
+        show_all: bool = False
+    ) -> str:
+        """
+        Send summary of multiple trades matching alert criteria.
+        
+        Args:
+            manager_id: Manager's Slack user ID
+            alert: Alert configuration
+            trades: List of matching trades
+            show_all: Whether to show all trades or just summary
+            
+        Returns:
+            Notification ID
+        """
+        try:
+            from ui.risk_alert_widget import create_existing_trades_summary
+            
+            # Create summary message
+            message = create_existing_trades_summary(alert, trades, show_all)
+            
+            notification = NotificationMessage(
+                notification_id=f"alert_summary_{alert.alert_id}_{int(datetime.utcnow().timestamp())}",
+                user_id=manager_id,
+                notification_type=NotificationType.PORTFOLIO_ALERT,
+                priority=NotificationPriority.HIGH,
+                title=f"🔍 Risk Alert Scan: {alert.name or 'Alert'}",
+                message=f"Found {len(trades)} trades matching your risk alert criteria",
+                blocks=message['blocks'],
+                channels=[DeliveryChannel.SLACK_DM],
+                context={
+                    'alert_id': alert.alert_id,
+                    'trade_count': len(trades)
+                }
+            )
+            
+            await self._queue_notification(notification)
+            
+            self.logger.info("Risk alert summary notification queued",
+                           manager_id=manager_id,
+                           alert_id=alert.alert_id,
+                           trade_count=len(trades))
+            
+            return notification.notification_id
+            
+        except Exception as e:
+            self.logger.error("Failed to send risk alert summary", error=str(e))
+            raise e
+    
+    async def send_alert_confirmation(
+        self,
+        manager_id: str,
+        alert: 'RiskAlertConfig'
+    ) -> str:
+        """
+        Send confirmation after alert creation.
+        
+        Args:
+            manager_id: Manager's Slack user ID
+            alert: Created alert configuration
+            
+        Returns:
+            Notification ID
+        """
+        try:
+            from ui.risk_alert_widget import create_alert_confirmation_message
+            
+            message = create_alert_confirmation_message(alert)
+            
+            notification = NotificationMessage(
+                notification_id=f"alert_confirm_{alert.alert_id}_{int(datetime.utcnow().timestamp())}",
+                user_id=manager_id,
+                notification_type=NotificationType.SYSTEM_NOTIFICATION,
+                priority=NotificationPriority.NORMAL,
+                title="✅ Risk Alert Created",
+                message=f"Your risk alert has been created successfully",
+                blocks=message['blocks'],
+                channels=[DeliveryChannel.SLACK_DM],
+                context={'alert_id': alert.alert_id}
+            )
+            
+            await self._queue_notification(notification)
+            
+            self.logger.info("Alert confirmation notification queued",
+                           manager_id=manager_id,
+                           alert_id=alert.alert_id)
+            
+            return notification.notification_id
+            
+        except Exception as e:
+            self.logger.error("Failed to send alert confirmation", error=str(e))
+            raise e
+    
     async def update_user_preferences(
         self, 
         user_id: str, 

@@ -650,6 +650,14 @@ class ActionHandler:
                 trade.status = TradeStatus.EXECUTED
                 trade.execution_id = execution_result.execution_id
                 
+                # Check trade against active risk alerts
+                try:
+                    await alert_monitor.check_trade_against_alerts(trade)
+                    logger.info(f"Trade {trade.trade_id} checked against risk alerts")
+                except Exception as e:
+                    logger.error(f"Failed to check risk alerts: {e}")
+                    # Don't fail trade if alert check fails
+                
                 # Update position
                 await self.db_service.update_position(
                     trade.user_id,

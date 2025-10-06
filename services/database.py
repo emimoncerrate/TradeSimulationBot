@@ -110,6 +110,8 @@ class DatabaseService:
         self._dynamodb_resource = None
         self._tables = {}
         self._connection_pool = {}
+        self.is_mock_mode = False
+        self.mock_data = {}
         
         # Performance and monitoring
         self._query_cache = {}
@@ -125,11 +127,25 @@ class DatabaseService:
         }
         
         # Check if we should use mock mode for development
-        if os.getenv('ENVIRONMENT') == 'development' and os.getenv('AWS_ACCESS_KEY_ID') == 'mock-access-key-id':
+        # Use mock mode if: in development AND (no AWS creds OR placeholder AWS creds)
+        aws_key = os.getenv('AWS_ACCESS_KEY_ID', '')
+        is_development = os.getenv('ENVIRONMENT', 'development') == 'development'
+        has_placeholder_aws = aws_key in ['', 'mock-access-key-id', 'your-aws-access-key']
+        
+        if is_development and has_placeholder_aws:
             self._use_mock_mode()
         else:
-            # Initialize connection
-            self._initialize_connection()
+            # Initialize real connection
+            try:
+                self._initialize_connection()
+            except Exception as e:
+                # If connection fails in development, fall back to mock mode
+                if is_development:
+                    logger.warning(f"Failed to connect to AWS, falling back to mock mode: {e}")
+                    self._use_mock_mode()
+                else:
+                    # In production, fail loudly
+                    raise
         
         logger.info(f"DatabaseService initialized for region {region_name}")
     
@@ -1104,6 +1120,335 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Batch write trades failed: {str(e)}")
             raise DatabaseError(f"Batch write failed: {str(e)}", "BATCH_WRITE_FAILED", e)
+    
+    # ==================== Risk Alert Methods ====================
+    
+    async def save_risk_alert(self, alert: 'RiskAlertConfig') -> bool:
+        """
+        Save or update a risk alert configuration.
+        
+        Args:
+            alert: RiskAlertConfig object to save
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            DatabaseError: If save operation fails
+        """
+        try:
+            if self.is_mock_mode:
+                self.mock_data.setdefault('alerts', {})[alert.alert_id] = alert
+                logger.info(f"Risk alert {alert.alert_id} saved (mock mode)")
+                return True
+            
+            table = self._get_table('slack-trading-bot-alerts')
+            alert_data = alert.to_dict()
+            
+            table.put_item(Item=alert_data)
+            
+            logger.info(f"Risk alert {alert.alert_id} saved for manager {alert.manager_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to save risk alert: {str(e)}")
+            raise DatabaseError(f"Failed to save risk alert: {str(e)}", "SAVE_ALERT_ERROR", e)
+    
+    async def get_risk_alert(self, alert_id: str) -> Optional['RiskAlertConfig']:
+        """
+        Get a risk alert by ID.
+        
+        Args:
+            alert_id: Alert ID
+            
+        Returns:
+            RiskAlertConfig object or None if not found
+        """
+        try:
+            if self.is_mock_mode:
+                alert = self.mock_data.get('alerts', {}).get(alert_id)
+                return alert
+            
+            from models.risk_alert import RiskAlertConfig
+            
+            table = self._get_table('slack-trading-bot-alerts')
+            response = table.get_item(Key={'alert_id': alert_id})
+            
+            if 'Item' not in response:
+                return None
+            
+            return RiskAlertConfig.from_dict(response['Item'])
+            
+        except Exception as e:
+            logger.error(f"Failed to get risk alert {alert_id}: {str(e)}")
+            return None
+    
+    async def get_manager_alerts(self, manager_id: str, 
+                                 active_only: bool = True) -> List['RiskAlertConfig']:
+        """
+        Get all risk alerts for a specific manager.
+        
+        Args:
+            manager_id: Manager's Slack user ID
+            active_only: If True, only return active alerts
+            
+        Returns:
+            List of RiskAlertConfig objects
+        """
+        try:
+            if self.is_mock_mode:
+                alerts = list(self.mock_data.get('alerts', {}).values())
+                alerts = [a for a in alerts if a.manager_id == manager_id]
+                if active_only:
+                    alerts = [a for a in alerts if a.is_active()]
+                return alerts
+            
+            from models.risk_alert import RiskAlertConfig, AlertStatus
+            
+            table = self._get_table('slack-trading-bot-alerts')
+            
+            # Query by manager_id using GSI
+            response = table.query(
+                IndexName='manager_id-index',
+                KeyConditionExpression='manager_id = :manager_id',
+                ExpressionAttributeValues={':manager_id': manager_id}
+            )
+            
+            alerts = [RiskAlertConfig.from_dict(item) for item in response.get('Items', [])]
+            
+            if active_only:
+                alerts = [alert for alert in alerts if alert.is_active()]
+            
+            logger.info(f"Retrieved {len(alerts)} alerts for manager {manager_id}")
+            return alerts
+            
+        except Exception as e:
+            logger.error(f"Failed to get alerts for manager {manager_id}: {str(e)}")
+            return []
+    
+    async def get_active_alerts(self) -> List['RiskAlertConfig']:
+        """
+        Get all active risk alerts across all managers.
+        
+        Returns:
+            List of active RiskAlertConfig objects
+        """
+        try:
+            if self.is_mock_mode:
+                alerts = list(self.mock_data.get('alerts', {}).values())
+                return [a for a in alerts if a.is_active()]
+            
+            from models.risk_alert import RiskAlertConfig, AlertStatus
+            
+            table = self._get_table('slack-trading-bot-alerts')
+            
+            # Scan for active alerts
+            response = table.scan(
+                FilterExpression='#status = :status',
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues={':status': AlertStatus.ACTIVE.value}
+            )
+            
+            alerts = [RiskAlertConfig.from_dict(item) for item in response.get('Items', [])]
+            
+            # Filter out expired alerts
+            active_alerts = [alert for alert in alerts if alert.is_active()]
+            
+            logger.info(f"Retrieved {len(active_alerts)} active alerts")
+            return active_alerts
+            
+        except Exception as e:
+            logger.error(f"Failed to get active alerts: {str(e)}")
+            return []
+    
+    async def update_alert_status(self, alert_id: str, status: 'AlertStatus') -> bool:
+        """
+        Update the status of a risk alert.
+        
+        Args:
+            alert_id: Alert ID
+            status: New status
+            
+        Returns:
+            True if successful
+        """
+        try:
+            if self.is_mock_mode:
+                alert = self.mock_data.get('alerts', {}).get(alert_id)
+                if alert:
+                    alert.status = status
+                    alert.updated_at = datetime.now(timezone.utc)
+                    return True
+                return False
+            
+            table = self._get_table('slack-trading-bot-alerts')
+            
+            table.update_item(
+                Key={'alert_id': alert_id},
+                UpdateExpression='SET #status = :status, updated_at = :updated_at',
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues={
+                    ':status': status.value,
+                    ':updated_at': datetime.now(timezone.utc).isoformat()
+                }
+            )
+            
+            logger.info(f"Alert {alert_id} status updated to {status.value}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to update alert status: {str(e)}")
+            return False
+    
+    async def delete_alert(self, alert_id: str) -> bool:
+        """
+        Delete a risk alert (soft delete - marks as deleted).
+        
+        Args:
+            alert_id: Alert ID
+            
+        Returns:
+            True if successful
+        """
+        try:
+            from models.risk_alert import AlertStatus
+            return await self.update_alert_status(alert_id, AlertStatus.DELETED)
+            
+        except Exception as e:
+            logger.error(f"Failed to delete alert {alert_id}: {str(e)}")
+            return False
+    
+    async def record_alert_trigger(self, alert_id: str) -> bool:
+        """
+        Record that an alert was triggered.
+        
+        Args:
+            alert_id: Alert ID
+            
+        Returns:
+            True if successful
+        """
+        try:
+            if self.is_mock_mode:
+                alert = self.mock_data.get('alerts', {}).get(alert_id)
+                if alert:
+                    alert.record_trigger()
+                    return True
+                return False
+            
+            table = self._get_table('slack-trading-bot-alerts')
+            
+            table.update_item(
+                Key={'alert_id': alert_id},
+                UpdateExpression='SET trigger_count = trigger_count + :inc, '
+                               'last_triggered_at = :triggered_at, '
+                               'updated_at = :updated_at',
+                ExpressionAttributeValues={
+                    ':inc': 1,
+                    ':triggered_at': datetime.now(timezone.utc).isoformat(),
+                    ':updated_at': datetime.now(timezone.utc).isoformat()
+                }
+            )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to record alert trigger: {str(e)}")
+            return False
+    
+    async def save_alert_trigger_event(self, event: 'AlertTriggerEvent') -> bool:
+        """
+        Save an alert trigger event for audit trail.
+        
+        Args:
+            event: AlertTriggerEvent object
+            
+        Returns:
+            True if successful
+        """
+        try:
+            if self.is_mock_mode:
+                self.mock_data.setdefault('alert_events', {})[event.event_id] = event
+                return True
+            
+            table = self._get_table('slack-trading-bot-alert-events')
+            event_data = event.to_dict()
+            
+            table.put_item(Item=event_data)
+            
+            logger.info(f"Alert trigger event {event.event_id} saved")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to save alert trigger event: {str(e)}")
+            return False
+    
+    async def get_trades_matching_criteria(
+        self,
+        trade_size_min: Decimal,
+        loss_percent: Decimal,
+        current_vix: Decimal,
+        limit: int = 100
+    ) -> List['Trade']:
+        """
+        Query trades that match the given risk alert criteria.
+        
+        Args:
+            trade_size_min: Minimum trade size in dollars
+            loss_percent: Minimum loss percentage
+            current_vix: Current VIX level (for filtering)
+            limit: Maximum number of trades to return
+            
+        Returns:
+            List of matching Trade objects
+        """
+        try:
+            if self.is_mock_mode:
+                # In mock mode, return sample trades
+                from models.trade import Trade, TradeType, TradeStatus
+                return []
+            
+            from models.trade import Trade, TradeType, TradeStatus
+            
+            table = self._get_table(self.trades_table_name)
+            
+            # Get recent executed/open trades
+            response = table.scan(
+                FilterExpression='#status IN (:executed, :open)',
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues={
+                    ':executed': TradeStatus.EXECUTED.value,
+                    ':open': TradeStatus.OPEN.value
+                },
+                Limit=limit * 2  # Get more to filter
+            )
+            
+            matching_trades = []
+            
+            for item in response.get('Items', []):
+                try:
+                    trade = Trade.from_dict(item)
+                    trade_size = trade.quantity * trade.price
+                    
+                    # Check if trade size meets threshold
+                    if trade_size >= trade_size_min:
+                        matching_trades.append(trade)
+                        
+                        if len(matching_trades) >= limit:
+                            break
+                            
+                except Exception as e:
+                    logger.warning(f"Failed to process trade item: {str(e)}")
+                    continue
+            
+            logger.info(f"Found {len(matching_trades)} trades matching criteria")
+            return matching_trades
+            
+        except Exception as e:
+            logger.error(f"Failed to query matching trades: {str(e)}")
+            return []
+    
+    # ==================== End Risk Alert Methods ====================
     
     # Health and Monitoring Methods
     

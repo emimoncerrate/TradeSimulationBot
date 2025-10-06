@@ -7,6 +7,16 @@ import os
 import sys
 from pathlib import Path
 
+# Load .env file FIRST before any imports create the config singleton
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# Skip app auto-initialization during tests
+os.environ['SKIP_APP_INIT'] = 'true'
+
 # Add project root to path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -30,10 +40,14 @@ def test_imports():
 def test_config_loading():
     """Test configuration loading with minimal environment."""
     try:
-        # Set minimal required environment variables
-        os.environ['SLACK_BOT_TOKEN'] = 'xoxb-test-token-for-validation'
-        os.environ['SLACK_SIGNING_SECRET'] = 'test-signing-secret-32-characters-long'
-        os.environ['FINNHUB_API_KEY'] = 'test-api-key'
+        # Set minimal test values only if not already in environment
+        # (environment should be loaded from .env at script start)
+        if not os.getenv('SLACK_BOT_TOKEN'):
+            os.environ['SLACK_BOT_TOKEN'] = 'xoxb-test-token-for-validation'
+        if not os.getenv('SLACK_SIGNING_SECRET'):
+            os.environ['SLACK_SIGNING_SECRET'] = 'test-signing-secret-32-characters-long'
+        if not os.getenv('FINNHUB_API_KEY'):
+            os.environ['FINNHUB_API_KEY'] = 'test-api-key'
         
         from config.settings import get_config
         config = get_config()
@@ -53,6 +67,12 @@ def test_app_creation():
     try:
         # Import after setting environment variables
         from app import create_slack_app
+        
+        # Debug: Check what token is being used
+        import os
+        token = os.getenv('SLACK_BOT_TOKEN', '')
+        print(f"   Using token (first 20 chars): {token[:20]}...")
+        print(f"   Token length: {len(token)}")
         
         app = create_slack_app()
         print("✅ Slack app created successfully")

@@ -438,14 +438,17 @@ class ConfigurationManager:
             bool: True if environment is properly configured
         """
         try:
-            # Validate AWS credentials and permissions (skip in development with mock credentials)
-            if not (self._config.environment.value == 'development' and 
-                   os.getenv('AWS_ACCESS_KEY_ID') == 'mock-access-key-id'):
+            # Validate AWS credentials and permissions (skip in development with placeholder credentials)
+            aws_key = os.getenv('AWS_ACCESS_KEY_ID', '')
+            is_development = self._config.environment.value == 'development'
+            has_placeholder_aws = aws_key in ['', 'mock-access-key-id', 'your-aws-access-key']
+            
+            if not (is_development and has_placeholder_aws):
                 if not self._config.aws.validate_aws_credentials():
                     logging.error("AWS credentials validation failed")
                     return False
             else:
-                logging.info("Skipping AWS validation in development mode with mock credentials")
+                logging.info("Skipping AWS validation in development mode (placeholder credentials detected)")
             
             # Validate Slack configuration
             if not self._config.slack.bot_token or not self._config.slack.signing_secret:

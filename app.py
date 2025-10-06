@@ -41,6 +41,10 @@ import uvicorn
 # Application modules
 from config.settings import get_config, validate_environment
 from services.service_container import get_container, ServiceContainer
+from services.database import DatabaseService
+from services.alert_monitor import get_alert_monitor
+from ui.notifications import NotificationService
+from listeners.risk_alert_handlers import register_risk_alert_handlers
 from listeners.commands import register_command_handlers
 from listeners.actions import register_action_handlers
 from listeners.events import register_event_handlers
@@ -55,6 +59,14 @@ logger = logging.getLogger(__name__)
 # Global configuration and service container
 config = get_config()
 service_container = get_container()
+
+# Initialize alert monitor
+notification_service = NotificationService()
+alert_monitor = get_alert_monitor(
+    db_service=service_container.get(DatabaseService),
+    notification_service=notification_service,
+    market_data_service=None  # Will be initialized async
+)
 
 # Application state and metrics
 class ApplicationMetrics:
@@ -343,6 +355,21 @@ def create_slack_app() -> App:
             logger.error(f"Failed to register event handlers: {e}")
             raise
         
+        # Register risk alert handlers
+        try:
+            from services.auth import AuthService
+            register_risk_alert_handlers(
+                app=app,
+                db_service=service_container.get(DatabaseService),
+                auth_service=service_container.get(AuthService),
+                alert_monitor=alert_monitor,
+                notification_service=notification_service
+            )
+            logger.info("Risk alert handlers registered successfully")
+        except Exception as e:
+            logger.error(f"Failed to register risk alert handlers: {e}")
+            # Don't raise - alert feature is optional, don't break app startup
+        
         # Register global error handler
         @app.error
         def global_error_handler(error, body, logger):
@@ -542,11 +569,16 @@ def register_middleware(app: App) -> None:
     logger.info("Middleware stack registered successfully")
 
 # Create Slack app instance with error handling
-try:
-    slack_app = create_slack_app()
-    logger.info("Slack app instance created successfully")
-except Exception as e:
-    logger.critical(f"Failed to create Slack app instance: {e}")
+# Skip auto-creation if SKIP_APP_INIT is set (useful for testing)
+if os.getenv('SKIP_APP_INIT', 'false').lower() != 'true':
+    try:
+        slack_app = create_slack_app()
+        logger.info("Slack app instance created successfully")
+    except Exception as e:
+        logger.critical(f"Failed to create Slack app instance: {e}")
+        slack_app = None
+else:
+    logger.info("Skipping Slack app auto-initialization (SKIP_APP_INIT is set)")
     slack_app = None
 
 # Lambda handler for AWS deployment with comprehensive error handling
