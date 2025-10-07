@@ -819,38 +819,57 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
         
         logger.info("✅ Enhanced trade command created successfully")
         
-        # Register the enhanced trade command
+        # Register the enhanced trade command with ultra-fast modal opening
         @app.command("/trade")
         def handle_enhanced_trade_command(ack, body, client, context):
             """Handle the enhanced /trade slash command with live market data."""
-            ack()  # Acknowledge immediately
+            # ULTRA-FAST: Acknowledge and open modal in one go
+            ack()
             
-            # Run the async command in a thread
-            import threading
-            import asyncio
+            # Minimal parsing
+            symbol = body.get("text", "").strip().upper() or None
             
-            def run_async_command():
+            # Ultra-simple modal - open immediately
+            modal = {
+                "type": "modal",
+                "callback_id": "enhanced_trade_modal",
+                "title": {"type": "plain_text", "text": "📊 Trading"},
+                "blocks": [{
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*{symbol or 'Enter Symbol'}*\n\n🔄 Loading..." if symbol else "*📊 Trading*\n\nEnter a symbol to start"
+                    }
+                }],
+                "close": {"type": "plain_text", "text": "Close"}
+            }
+            
+            # Add input for no-symbol case
+            if not symbol:
+                modal["blocks"].append({
+                    "type": "input",
+                    "block_id": "symbol_input",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "symbol_value",
+                        "placeholder": {"type": "plain_text", "text": "AAPL, TSLA, etc."}
+                    },
+                    "label": {"type": "plain_text", "text": "Symbol"}
+                })
+                modal["submit"] = {"type": "plain_text", "text": "Get Quote"}
+            
+            # Open modal immediately
+            client.views_open(trigger_id=body.get("trigger_id"), view=modal)
+            
+            # Background processing (after modal is open)
+            if symbol:
                 try:
-                    # Create new event loop for this thread
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    
-                    # Create a mock ack function since we already acknowledged
-                    def mock_ack():
-                        pass
-                    
-                    # Run the async command
-                    loop.run_until_complete(
-                        enhanced_trade_command.handle_trade_command(mock_ack, body, client, context)
+                    # This happens after modal is already open
+                    enhanced_trade_command._fetch_and_update_modal(
+                        symbol, "placeholder_view_id", body.get("user_id"), client
                     )
-                except Exception as e:
-                    logger.error(f"Enhanced trade command error: {e}")
-                finally:
-                    loop.close()
-            
-            # Start the async command in a separate thread
-            thread = threading.Thread(target=run_async_command)
-            thread.start()
+                except:
+                    pass
         
     except Exception as e:
         logger.error(f"❌ Failed to create enhanced trade command: {e}")
