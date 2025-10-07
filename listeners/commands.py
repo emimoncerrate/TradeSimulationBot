@@ -858,16 +858,19 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
                 })
                 modal["submit"] = {"type": "plain_text", "text": "Get Quote"}
             
-            # Open modal immediately
-            client.views_open(trigger_id=body.get("trigger_id"), view=modal)
+            # Open modal immediately and get the view_id
+            response = client.views_open(trigger_id=body.get("trigger_id"), view=modal)
             
             # Background processing (after modal is open)
             if symbol:
                 try:
-                    # This happens after modal is already open
-                    enhanced_trade_command._fetch_and_update_modal(
-                        symbol, "placeholder_view_id", body.get("user_id"), client
-                    )
+                    # Get the actual view_id from the response
+                    view_id = response.get("view", {}).get("id")
+                    if view_id:
+                        # This happens after modal is already open
+                        enhanced_trade_command._fetch_and_update_modal(
+                            symbol, view_id, body.get("user_id"), client
+                        )
                 except:
                     pass
         

@@ -1102,10 +1102,14 @@ class EnhancedTradeCommand:
         """Fetch market data and update the modal with real data."""
         import threading
         import requests
+        import time
         from config.settings import get_config
         
         def fetch_and_update():
             try:
+                # Small delay to ensure modal is fully opened
+                time.sleep(0.1)
+                
                 # Get API key from config
                 config = get_config()
                 api_key = config.market_data.finnhub_api_key
@@ -1195,13 +1199,27 @@ class EnhancedTradeCommand:
                         }
                     }
                     
-                    # Update the modal
-                    client.views_update(
-                        view_id=view_id,
-                        view=updated_modal
-                    )
-                    
-                    logger.info(f"✅ {symbol} modal updated with real market data for user {user_id}")
+                    # Update the modal with error handling
+                    try:
+                        update_response = client.views_update(
+                            view_id=view_id,
+                            view=updated_modal
+                        )
+                        if update_response.get("ok"):
+                            logger.info(f"✅ {symbol} modal updated with real market data for user {user_id}")
+                        else:
+                            logger.error(f"❌ Modal update failed for {symbol}: {update_response.get('error')}")
+                    except Exception as update_error:
+                        logger.error(f"❌ Exception during modal update for {symbol}: {update_error}")
+                        # Try to send a message instead if modal update fails
+                        try:
+                            client.chat_postEphemeral(
+                                channel="C09H1R7KKP1",  # Use the channel from logs
+                                user=user_id,
+                                text=f"📊 *{symbol}* - ${current_price} ({price_change_percent:+.2f}%)"
+                            )
+                        except:
+                            pass
                         
                 else:
                     print(f"❌ {symbol} API request failed with status {response.status_code}")
