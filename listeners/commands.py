@@ -823,8 +823,12 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
         @app.command("/trade")
         def handle_enhanced_trade_command(ack, body, client, context):
             """Handle the enhanced /trade slash command with live market data."""
+            # Debug logging
+            logger.info(f"🚀 /trade command received: symbol='{body.get('text', '').strip()}', trigger_id={body.get('trigger_id')}")
+            
             # ULTRA-FAST: Acknowledge and open modal in one go
             ack()
+            logger.info("✅ Command acknowledged immediately")
             
             # Minimal parsing
             symbol = body.get("text", "").strip().upper() or None
@@ -859,7 +863,21 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
                 modal["submit"] = {"type": "plain_text", "text": "Get Quote"}
             
             # Open modal immediately and get the view_id
-            response = client.views_open(trigger_id=body.get("trigger_id"), view=modal)
+            try:
+                response = client.views_open(trigger_id=body.get("trigger_id"), view=modal)
+                logger.info(f"✅ Modal opened successfully for {symbol or 'no-symbol'}")
+            except Exception as modal_error:
+                logger.error(f"❌ Modal opening failed: {modal_error}")
+                # Send fallback message
+                try:
+                    client.chat_postEphemeral(
+                        channel=body.get("channel_id"),
+                        user=body.get("user_id"),
+                        text=f"❌ Unable to open trading modal. Please try again."
+                    )
+                except:
+                    pass
+                return
             
             # Background processing (after modal is open)
             if symbol:
@@ -876,15 +894,8 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
         
     except Exception as e:
         logger.error(f"❌ Failed to create enhanced trade command: {e}")
-        # Fall back to original trade command
-        @app.command("/trade")
-        async def handle_fallback_trade_command(ack, body, client, context):
-            """Fallback trade command handler."""
-            await command_handler.process_command(
-                CommandType.TRADE, body, client, ack, context
-            )
-        logger.info("⚠️ Using fallback trade command")
-        return
+        logger.error("Enhanced trade command registration failed, but continuing without fallback to avoid conflicts")
+        # Note: Not registering fallback to avoid duplicate command registration conflicts
     
     # Register enhanced market data action handlers using the dedicated registration function
     from listeners.enhanced_market_actions import register_enhanced_market_actions
