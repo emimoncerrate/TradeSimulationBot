@@ -93,7 +93,8 @@ class DatabaseService:
             timeout: Connection timeout in seconds
         """
         self.region_name = region_name
-        self.endpoint_url = endpoint_url
+        # If no endpoint_url provided, check environment variable
+        self.endpoint_url = endpoint_url or os.getenv('DYNAMODB_LOCAL_ENDPOINT')
         self.max_retries = max_retries
         self.timeout = timeout
         

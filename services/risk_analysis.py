@@ -361,8 +361,9 @@ class RiskAnalysisService:
             self.logger.info("RiskAnalysisService initialization complete")
             
         except Exception as e:
-            self.logger.error("Failed to initialize RiskAnalysisService", error=str(e))
-            raise e
+            self.logger.warning("Bedrock not available, using mock mode for risk analysis", error=str(e))
+            self.is_mock_mode = True
+            self.logger.info("RiskAnalysisService initialized in MOCK MODE (Bedrock unavailable)")
     
     async def cleanup(self) -> None:
         """Clean up resources."""

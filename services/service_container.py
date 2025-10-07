@@ -23,6 +23,7 @@ from services.database import DatabaseService
 from services.market_data import MarketDataService
 from services.risk_analysis import RiskAnalysisService
 from services.trading_api import TradingAPIService
+from services.alpaca_service import AlpacaService
 
 # Import configuration
 from config.settings import get_config, AppConfig
