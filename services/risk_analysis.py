@@ -355,8 +355,14 @@ class RiskAnalysisService:
                 region_name=self.config.aws.region
             )
             
-            # Test Bedrock connectivity
-            await self._test_bedrock_connectivity()
+            # Test Bedrock connectivity (skip in development mode with invalid credentials)
+            if self.config.environment.value != 'development' or (
+                os.getenv('AWS_ACCESS_KEY_ID') not in ['local', 'mock-access-key-id'] and 
+                os.getenv('AWS_SECRET_ACCESS_KEY') not in ['local', 'mock-secret-key']
+            ):
+                await self._test_bedrock_connectivity()
+            else:
+                self.logger.info("Skipping Bedrock connectivity test in development mode with local credentials")
             
             self.logger.info("RiskAnalysisService initialization complete")
             
@@ -1065,11 +1071,12 @@ Data Quality: {context['market']['data_quality']}
             
             response = await asyncio.get_event_loop().run_in_executor(
                 None,
-                self.bedrock_client.invoke_model,
-                self.config.aws.bedrock_model_id,
-                json.dumps(test_body),
-                'application/json',
-                'application/json'
+                lambda: self.bedrock_client.invoke_model(
+                    modelId=self.config.aws.bedrock_model_id,
+                    body=json.dumps(test_body),
+                    contentType='application/json',
+                    accept='application/json'
+                )
             )
             
             if response['ResponseMetadata']['HTTPStatusCode'] == 200:

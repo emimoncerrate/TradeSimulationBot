@@ -208,7 +208,7 @@ class CommandHandler:
         
         try:
             # Acknowledge command immediately (within 3 seconds)
-            ack()
+            await ack()
             
             # Create command context
             command_context = self._create_command_context(command_type, body, context)

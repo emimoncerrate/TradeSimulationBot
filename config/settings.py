@@ -440,7 +440,7 @@ class ConfigurationManager:
         try:
             # Validate AWS credentials and permissions (skip in development with mock credentials)
             if not (self._config.environment.value == 'development' and 
-                   os.getenv('AWS_ACCESS_KEY_ID') == 'mock-access-key-id'):
+                   os.getenv('AWS_ACCESS_KEY_ID') in ['mock-access-key-id', 'local']):
                 if not self._config.aws.validate_aws_credentials():
                     logging.error("AWS credentials validation failed")
                     return False

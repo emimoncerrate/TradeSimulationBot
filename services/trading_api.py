@@ -34,6 +34,7 @@ import structlog
 from config.settings import get_config
 from models.trade import Trade, TradeStatus
 from services.market_data import MarketQuote, get_market_data_service
+from services.alpaca_service import AlpacaService
 
 
 class TradingError(Exception):
@@ -479,7 +480,10 @@ class TradingAPIService:
         self.config = get_config()
         self.logger = structlog.get_logger(__name__)
         
-        # Initialize market simulator
+        # Initialize Alpaca service for real paper trading
+        self.alpaca_service = AlpacaService()
+        
+        # Initialize market simulator for fallback
         self.market_simulator = MarketSimulator()
         
         # Execution tracking
@@ -521,6 +525,18 @@ class TradingAPIService:
         self.logger.info("TradingAPIService initialized",
                         mock_execution=self.config.trading.mock_execution_enabled,
                         execution_delay=self.config.trading.execution_delay_seconds)
+    
+    async def initialize(self):
+        """Initialize the trading service and Alpaca connection."""
+        try:
+            await self.alpaca_service.initialize()
+            if self.alpaca_service.is_available():
+                self.logger.info("🚀 Alpaca Paper Trading connected - Real paper trades enabled!")
+            else:
+                self.logger.info("📝 Using mock trading simulation")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize Alpaca service: {e}")
+            self.logger.info("📝 Falling back to mock trading")
     
     async def execute_trade(
         self, 
@@ -576,23 +592,56 @@ class TradingAPIService:
             execution_report.execution_started_at = datetime.utcnow()
             execution_report.audit_trail.append(f"Execution started at {execution_report.execution_started_at}")
             
-            # Simulate execution delay
-            if self.config.trading.execution_delay_seconds > 0:
-                await asyncio.sleep(self.config.trading.execution_delay_seconds)
-            
-            # Simulate execution
-            fills, execution_metrics = self.market_simulator.simulate_execution(
-                trade.symbol,
-                trade.trade_type,
-                abs(trade.quantity),
-                market_quote,
-                order_type
-            )
-            
-            # Process fills
-            for fill in fills:
-                fill.order_id = execution_report.order_id
-                execution_report.add_fill(fill)
+            # Execute trade - use Alpaca if available, otherwise simulate
+            if self.alpaca_service.is_available():
+                # Real Alpaca Paper Trading execution
+                self.logger.info(f"🚀 Executing {trade.trade_type.value} order via Alpaca Paper Trading")
+                
+                alpaca_order = await self.alpaca_service.submit_order(
+                    symbol=trade.symbol,
+                    quantity=abs(trade.quantity),
+                    side='buy' if trade.trade_type.value.lower() == 'buy' else 'sell',
+                    order_type='market'  # Using market orders for simplicity
+                )
+                
+                if alpaca_order:
+                    # Create fill from Alpaca order
+                    fill = Fill(
+                        fill_id=str(uuid.uuid4()),
+                        order_id=execution_report.order_id,
+                        symbol=trade.symbol,
+                        quantity=abs(trade.quantity),
+                        price=Decimal(str(alpaca_order.get('filled_avg_price', market_quote.price))),
+                        timestamp=datetime.utcnow(),
+                        exchange='ALPACA_PAPER'
+                    )
+                    execution_report.add_fill(fill)
+                    execution_report.audit_trail.append(f"Alpaca order executed: {alpaca_order['order_id']}")
+                    self.logger.info(f"✅ Alpaca order executed successfully: {alpaca_order['order_id']}")
+                else:
+                    raise Exception("Alpaca order submission failed")
+                    
+            else:
+                # Fallback to simulation
+                self.logger.info(f"📝 Simulating {trade.trade_type.value} order execution")
+                
+                # Simulate execution delay
+                if self.config.trading.execution_delay_seconds > 0:
+                    await asyncio.sleep(self.config.trading.execution_delay_seconds)
+                
+                # Simulate execution
+                fills, execution_metrics = self.market_simulator.simulate_execution(
+                    trade.symbol,
+                    trade.trade_type,
+                    abs(trade.quantity),
+                    market_quote,
+                    order_type
+                )
+                
+                # Process fills
+                for fill in fills:
+                    fill.order_id = execution_report.order_id
+                    execution_report.add_fill(fill)
             
             # Update execution metrics
             execution_report.market_impact_bps = execution_metrics.get('market_impact_bps')

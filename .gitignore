@@ -3,6 +3,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Cache directories
+.pytest_cache/
+*.cache/
+
+# Log files
+logs/*.log
+*.log
+
 # C extensions
 *.so
 
