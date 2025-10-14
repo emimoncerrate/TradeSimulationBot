@@ -45,7 +45,6 @@ class CommandType(Enum):
     """Enumeration of supported command types."""
     TRADE = "trade"
     PORTFOLIO = "portfolio"
-    PM_DASHBOARD = "pm_dashboard"
     HELP = "help"
     STATUS = "status"
 
@@ -179,7 +178,6 @@ class CommandHandler:
         self.command_routes = {
             CommandType.TRADE: self._handle_trade_command,
             CommandType.PORTFOLIO: self._handle_portfolio_command,
-            CommandType.PM_DASHBOARD: self._handle_pm_dashboard_command,
             CommandType.HELP: self._handle_help_command,
             CommandType.STATUS: self._handle_status_command
         }
@@ -209,15 +207,17 @@ class CommandHandler:
         error_type = None
         
         try:
-            # Note: ack() is now called in the wrapper before this method runs
-            # to avoid event loop nesting issues with asyncio.run()
+            # Acknowledge command immediately (within 3 seconds)
+            ack()
             
             # Create command context
             command_context = self._create_command_context(command_type, body, context)
             
             logger.info(
-                f"Processing command: {command_type.value} | User: {command_context.slack_user_id} | "
-                f"Channel: {command_context.channel_id} | Request: {command_context.request_id}"
+                f"Processing command: {command_type.value} | "
+                f"User: {command_context.slack_user_id} | "
+                f"Channel: {command_context.channel_id} | "
+                f"Request: {command_context.request_id}"
             )
             
             # Validate and authenticate
@@ -236,8 +236,10 @@ class CommandHandler:
             
             success = True
             logger.info(
-                f"Command processed successfully: {command_type.value} | User: {command_context.slack_user_id} | "
-                f"Request: {command_context.request_id} | Response time: {(time.time() - start_time) * 1000:.2f}ms"
+                f"Command processed successfully: {command_type.value} | "
+                f"User: {command_context.slack_user_id} | "
+                f"Request: {command_context.request_id} | "
+                f"Response time: {(time.time() - start_time) * 1000:.2f}ms"
             )
             
         except RateLimitError as e:
@@ -248,8 +250,11 @@ class CommandHandler:
                 f"⏱️ Rate limit exceeded. {e.message}",
                 ephemeral=True
             )
-            user_id = command_context.slack_user_id if command_context else "unknown"
-            logger.warning(f"Rate limit exceeded | User: {user_id} | Error: {str(e)}")
+            logger.warning(
+                f"Rate limit exceeded | "
+                f"User: {command_context.slack_user_id if command_context else 'unknown'} | "
+                f"Error: {str(e)}"
+            )
             
         except AuthenticationError as e:
             error_type = "AUTHENTICATION"
@@ -259,8 +264,11 @@ class CommandHandler:
                 f"🔐 Authentication failed: {e.message}",
                 ephemeral=True
             )
-            user_id = command_context.slack_user_id if command_context else "unknown"
-            logger.warning(f"Authentication failed | User: {user_id} | Error: {str(e)}")
+            logger.warning(
+                f"Authentication failed | "
+                f"User: {command_context.slack_user_id if command_context else 'unknown'} | "
+                f"Error: {str(e)}"
+            )
             
         except AuthorizationError as e:
             error_type = "AUTHORIZATION"
@@ -270,8 +278,11 @@ class CommandHandler:
                 f"🚫 Access denied: {e.message}",
                 ephemeral=True
             )
-            user_id = command_context.slack_user_id if command_context else "unknown"
-            logger.warning(f"Authorization failed | User: {user_id} | Error: {str(e)}")
+            logger.warning(
+                f"Authorization failed | "
+                f"User: {command_context.slack_user_id if command_context else 'unknown'} | "
+                f"Error: {str(e)}"
+            )
             
         except CommandValidationError as e:
             error_type = "VALIDATION"
@@ -281,8 +292,11 @@ class CommandHandler:
                 f"❌ Invalid command: {e.message}",
                 ephemeral=True
             )
-            user_id = command_context.slack_user_id if command_context else "unknown"
-            logger.warning(f"Command validation failed | User: {user_id} | Error: {str(e)}")
+            logger.warning(
+                f"Command validation failed | "
+                f"User: {command_context.slack_user_id if command_context else 'unknown'} | "
+                f"Error: {str(e)}"
+            )
             
         except SecurityViolationError as e:
             error_type = "SECURITY_VIOLATION"
@@ -291,8 +305,12 @@ class CommandHandler:
                 "🚨 Security violation detected. This incident has been logged.",
                 ephemeral=True
             )
-            user_id = command_context.slack_user_id if command_context else "unknown"
-            logger.error(f"Security violation detected | User: {user_id} | Type: {e.violation_type} | Error: {str(e)}")
+            logger.error(
+                f"Security violation detected | "
+                f"User: {command_context.slack_user_id if command_context else 'unknown'} | "
+                f"Violation: {e.violation_type} | "
+                f"Error: {str(e)}"
+            )
             
         except SlackApiError as e:
             error_type = "SLACK_API"
@@ -301,8 +319,11 @@ class CommandHandler:
                 "📡 Communication error with Slack. Please try again.",
                 ephemeral=True
             )
-            user_id = command_context.slack_user_id if command_context else "unknown"
-            logger.error(f"Slack API error | User: {user_id} | Error: {str(e)}")
+            logger.error(
+                f"Slack API error | "
+                f"User: {command_context.slack_user_id if command_context else 'unknown'} | "
+                f"Error: {str(e)}"
+            )
             
         except Exception as e:
             error_type = "SYSTEM"
@@ -311,9 +332,13 @@ class CommandHandler:
                 "⚠️ System error occurred. Please try again or contact support.",
                 ephemeral=True
             )
-            cmd_type = command_type.value if command_type else "unknown"
-            user_id = command_context.slack_user_id if command_context else "unknown"
-            logger.error(f"Unexpected error processing command | Type: {cmd_type} | User: {user_id} | Error: {str(e)}", exc_info=True)
+            logger.error(
+                f"Unexpected error processing command | "
+                f"Command: {command_type.value if command_type else 'unknown'} | "
+                f"User: {command_context.slack_user_id if command_context else 'unknown'} | "
+                f"Error: {str(e)}",
+                exc_info=True
+            )
             
         finally:
             # Record metrics
@@ -354,7 +379,7 @@ class CommandHandler:
         if not command_context.team_id:
             raise CommandValidationError("Missing team ID", "MISSING_TEAM_ID")
         
-        # Authenticate user and create session FIRST
+        # Authenticate user and create session first
         user, session = await self.auth_service.authenticate_slack_user(
             command_context.slack_user_id,
             command_context.team_id,
@@ -367,14 +392,14 @@ class CommandHandler:
         command_context.user = user
         command_context.session_id = session.session_id
         
-        # Validate channel access AFTER we have the user
+        # Validate channel access (now that we have the user)
         await self._validate_channel_access(command_context)
         
         logger.info(
-            "User authenticated successfully",
-            user_id=user.user_id,
-            role=user.role.value,
-            session_id=session.session_id
+            f"User authenticated successfully | "
+            f"User: {user.user_id} | "
+            f"Role: {user.role.value} | "
+            f"Session: {session.session_id}"
         )
     
     async def _validate_channel_access(self, command_context: CommandContext) -> None:
@@ -382,7 +407,7 @@ class CommandHandler:
         try:
             # Check if channel is approved for trading commands
             is_approved = await self.auth_service.authorize_channel_access(
-                command_context.user,  # Now we have the authenticated user
+                command_context.user,  # Now we have the user
                 command_context.channel_id
             )
             
@@ -435,7 +460,7 @@ class CommandHandler:
     
     async def _handle_trade_command(self, command_context: CommandContext, client: WebClient) -> None:
         """
-        Handle /trade command with comprehensive validation and UI generation.
+        Handle /trade command with enhanced interactive modal.
         
         Args:
             command_context: Command context with user and parameters
@@ -443,7 +468,7 @@ class CommandHandler:
         """
         try:
             # Validate user has trading permissions
-            required_permissions = [Permission.EXECUTE_TRADES, Permission.VIEW_MARKET_DATA]
+            required_permissions = [Permission.EXECUTE_TRADES, Permission.VIEW_TRADES]
             
             missing_permissions = []
             for permission in required_permissions:
@@ -456,33 +481,51 @@ class CommandHandler:
                     ', '.join(missing_permissions)
                 )
             
-            # Parse command parameters
+            # Parse command parameters for symbol extraction
             parameters = self._parse_trade_parameters(command_context.command_text)
             command_context.parameters = parameters
             
-            # Create widget context
-            widget_context = WidgetContext(
+            # Import interactive components
+            from ui.interactive_trade_widget import InteractiveTradeWidget, InteractiveTradeContext
+            
+            # Determine initial symbol from parameters or default
+            symbol = "AAPL"  # Default symbol
+            if parameters.get('symbol'):
+                symbol = parameters['symbol'].upper()
+            
+            # Create interactive context
+            interactive_context = InteractiveTradeContext(
                 user=command_context.user,
                 channel_id=command_context.channel_id,
                 trigger_id=command_context.trigger_id,
-                state=WidgetState.INITIAL,
-                theme=UITheme.STANDARD
+                symbol=symbol
             )
             
-            # Pre-populate with parsed parameters
-            if parameters.get('symbol'):
-                widget_context.symbol = parameters['symbol'].upper()
+            # Pre-populate with parsed parameters if available
             if parameters.get('quantity'):
-                widget_context.quantity = parameters['quantity']
+                interactive_context.shares = parameters['quantity']
             if parameters.get('trade_type'):
-                widget_context.trade_type = parameters['trade_type']
-            if parameters.get('price'):
-                widget_context.price = parameters['price']
+                interactive_context.trade_side = "buy" if parameters['trade_type'].value == "buy" else "sell"
             
-            # Generate trade modal
-            modal = self.trade_widget.create_trade_modal(widget_context)
+            # Fetch market data for the symbol
+            try:
+                from services.service_container import get_market_data_service
+                market_service = get_market_data_service()
+                market_quote = await market_service.get_quote(symbol)
+                
+                # Create interactive widget and update with market data
+                widget = InteractiveTradeWidget()
+                modal = widget.update_modal_with_price(interactive_context, market_quote)
+                
+                logger.info(f"Market data fetched for {symbol}: ${market_quote.current_price}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to fetch market data for {symbol}: {e}")
+                # Fall back to modal without market data
+                widget = InteractiveTradeWidget()
+                modal = widget.create_interactive_modal(interactive_context)
             
-            # Open modal
+            # Open the enhanced interactive modal
             await asyncio.to_thread(
                 client.views_open,
                 trigger_id=command_context.trigger_id,
@@ -490,10 +533,11 @@ class CommandHandler:
             )
             
             logger.info(
-                "Trade modal opened successfully",
-                user_id=command_context.user.user_id,
-                channel_id=command_context.channel_id,
-                parameters=parameters
+                f"Enhanced trade modal opened successfully | "
+                f"User: {command_context.user.user_id} | "
+                f"Channel: {command_context.channel_id} | "
+                f"Symbol: {symbol} | "
+                f"Features: interactive calculations, multiple order types"
             )
             
         except ValidationError as e:
@@ -510,7 +554,7 @@ class CommandHandler:
                 raise
     
     async def _handle_portfolio_command(self, command_context: CommandContext, client: WebClient) -> None:
-        """Handle /portfolio command to show portfolio dashboard with live data."""
+        """Handle /portfolio command to show portfolio dashboard."""
         try:
             # Validate user has portfolio viewing permissions
             if not command_context.user.has_permission(Permission.VIEW_PORTFOLIO):
@@ -519,200 +563,23 @@ class CommandHandler:
                     Permission.VIEW_PORTFOLIO.value
                 )
             
-            # Get user's portfolio
-            portfolio = await self.db_service.get_or_create_default_portfolio(command_context.user.user_id)
-            
-            # Get active positions
-            active_positions = portfolio.get_active_positions()
-            
-            # Build portfolio message
-            portfolio_text = (
-                f"📊 *Portfolio Summary for {command_context.user.profile.display_name}*\n\n"
-                f"*Account Overview:*\n"
-                f"• Total Value: ${portfolio.total_value:,.2f}\n"
-                f"• Cash Balance: ${portfolio.cash_balance:,.2f}\n"
-                f"• Total P&L: ${portfolio.total_pnl:,.2f} "
-            )
-            
-            # Add P&L percentage
-            if portfolio.total_cost_basis > 0:
-                pnl_pct = (portfolio.total_pnl / portfolio.total_cost_basis * 100)
-                pnl_emoji = "📈" if pnl_pct > 0 else "📉" if pnl_pct < 0 else "➡️"
-                portfolio_text += f"({pnl_pct:+.2f}% {pnl_emoji})\n"
-            else:
-                portfolio_text += "(0.00%)\n"
-            
-            portfolio_text += f"• Day Change: ${portfolio.day_change:,.2f}\n\n"
-            
-            # Add positions
-            if active_positions:
-                portfolio_text += f"*Active Positions ({len(active_positions)}):*\n"
-                
-                # Get market data service for live prices
-                from services.market_data import get_market_data_service
-                market_data_service = await get_market_data_service()
-                
-                # Update positions with live prices
-                for position in active_positions[:10]:  # Show top 10 positions
-                    try:
-                        # Fetch current price
-                        quote = await market_data_service.get_quote(position.symbol)
-                        if quote:
-                            # Update position with current price
-                            position.update_price(quote.current_price)
-                        
-                        # Format position display
-                        position_pnl = position.get_total_pnl()
-                        pnl_emoji = "🟢" if position_pnl > 0 else "🔴" if position_pnl < 0 else "⚪"
-                        
-                        portfolio_text += (
-                            f"{pnl_emoji} *{position.symbol}*: {position.quantity:,} shares @ "
-                            f"${position.current_price:.2f} | P&L: ${position_pnl:,.2f}\n"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to update position {position.symbol}: {str(e)}")
-                        # Show position without live price update
-                        portfolio_text += (
-                            f"• *{position.symbol}*: {position.quantity:,} shares @ "
-                            f"${position.current_price:.2f}\n"
-                        )
-                
-                if len(active_positions) > 10:
-                    portfolio_text += f"\n_...and {len(active_positions) - 10} more positions_\n"
-            else:
-                portfolio_text += "*Active Positions:* None\n"
-                portfolio_text += "_Start trading with `/trade` to build your portfolio_\n"
-            
-            portfolio_text += (
-                f"\n*Portfolio Info:*\n"
-                f"• Status: {portfolio.status.value.title()}\n"
-                f"• Created: {portfolio.inception_date.strftime('%Y-%m-%d')}\n"
-                f"• Last Updated: {portfolio.last_updated.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-                f"💡 *Tip:* Use `/trade` to execute trades"
-            )
-            
-            # Update portfolio in database with live prices
-            await self.db_service.update_portfolio(portfolio)
-            
-            # Send portfolio summary
+            # Send message directing user to App Home
             await asyncio.to_thread(
                 client.chat_postEphemeral,
                 channel=command_context.channel_id,
                 user=command_context.slack_user_id,
-                text=portfolio_text
+                text="📊 *Portfolio Dashboard*\n\n"
+                     "Your portfolio information is available in the *App Home* tab. "
+                     "Click on the bot name in the sidebar or search for 'Jain Global Trading Bot' "
+                     "to access your personalized dashboard with positions, P&L, and trade history."
             )
             
             logger.info(
-                "Portfolio command processed with live data",
-                user_id=command_context.user.user_id,
-                portfolio_value=float(portfolio.total_value),
-                active_positions=len(active_positions)
+                f"Portfolio command processed | User: {command_context.user.user_id}"
             )
             
         except Exception as e:
-            logger.error(f"Error handling portfolio command: {str(e)}", exc_info=True)
-            raise
-    
-    async def _handle_pm_dashboard_command(self, command_context: CommandContext, client: WebClient) -> None:
-        """Handle /pm-dashboard command - Portfolio Manager multi-portfolio view."""
-        try:
-            # Check if user is a Portfolio Manager or Admin
-            if not command_context.user.has_permission(Permission.VIEW_ALL_PORTFOLIOS):
-                raise CommandAuthorizationError(
-                    "You don't have permission to view the Portfolio Manager dashboard. This feature is only available to Portfolio Managers and Admins.",
-                    Permission.VIEW_ALL_PORTFOLIOS.value
-                )
-            
-            # Get all portfolios
-            all_portfolios = await self.db_service.get_all_portfolios(status=None, limit=50)
-            
-            # Calculate aggregate metrics
-            total_aum = sum(p.total_value for p in all_portfolios)
-            total_cash = sum(p.cash_balance for p in all_portfolios)
-            total_pnl = sum(p.total_pnl for p in all_portfolios)
-            total_traders = len(set(p.user_id for p in all_portfolios))
-            total_positions = sum(len(p.get_active_positions()) for p in all_portfolios)
-            
-            # Build PM dashboard
-            dashboard_text = f"📊 *Portfolio Manager Dashboard*\n\n"
-            dashboard_text += f"*Aggregate Metrics:*\n"
-            dashboard_text += f"• Total AUM: ${total_aum:,.2f}\n"
-            dashboard_text += f"• Cash Balance: ${total_cash:,.2f}\n"
-            dashboard_text += f"• Total P&L: ${total_pnl:,.2f}\n"
-            dashboard_text += f"• Active Traders: {total_traders}\n"
-            dashboard_text += f"• Active Positions: {total_positions}\n\n"
-            
-            # Show top portfolios by P&L
-            sorted_portfolios = sorted(all_portfolios, key=lambda p: p.total_pnl, reverse=True)
-            
-            if sorted_portfolios:
-                dashboard_text += f"*Top Performers:*\n"
-                for i, portfolio in enumerate(sorted_portfolios[:5], 1):
-                    emoji = "🟢" if portfolio.total_pnl > 0 else "🔴" if portfolio.total_pnl < 0 else "⚪"
-                    return_pct = (portfolio.total_pnl / portfolio.initial_balance * 100) if portfolio.initial_balance > 0 else 0
-                    dashboard_text += f"{emoji} {i}. User `{portfolio.user_id[:8]}...` - ${portfolio.total_pnl:,.2f} ({return_pct:.2f}%)\n"
-                
-                dashboard_text += f"\n*All Portfolios:*\n"
-                for portfolio in sorted_portfolios:
-                    emoji = "🟢" if portfolio.total_pnl > 0 else "🔴" if portfolio.total_pnl < 0 else "⚪"
-                    active_pos = len(portfolio.get_active_positions())
-                    dashboard_text += f"{emoji} `{portfolio.user_id[:12]}` | ${portfolio.total_value:,.2f} | {active_pos} positions | P&L: ${portfolio.total_pnl:,.2f}\n"
-            else:
-                dashboard_text += "*No active portfolios yet.*\n"
-            
-            # Add buttons for drill-down
-            blocks = [
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": dashboard_text}
-                },
-                {
-                    "type": "divider"
-                },
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "🔄 Live Trade Feed"},
-                            "action_id": "pm_trade_feed",
-                            "style": "primary"
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "⚠️ Risk Alerts"},
-                            "action_id": "pm_risk_alerts"
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "🔄 Refresh"},
-                            "action_id": "pm_refresh"
-                        }
-                    ]
-                }
-            ]
-            
-            # Send dashboard
-            await asyncio.to_thread(
-                client.chat_postEphemeral,
-                channel=command_context.channel_id,
-                user=command_context.slack_user_id,
-                blocks=blocks,
-                text=dashboard_text
-            )
-            
-            logger.info(
-                "PM Dashboard accessed",
-                user_id=command_context.user.user_id,
-                role=command_context.user.role.value,
-                total_portfolios=len(all_portfolios),
-                total_aum=float(total_aum)
-            )
-            
-        except CommandAuthorizationError:
-            raise
-        except Exception as e:
-            logger.error(f"Error handling PM dashboard command: {str(e)}", exc_info=True)
+            logger.error(f"Error handling portfolio command: {str(e)}")
             raise
     
     async def _handle_help_command(self, command_context: CommandContext, client: WebClient) -> None:
@@ -729,9 +596,9 @@ class CommandHandler:
             )
             
             logger.info(
-                "Help command processed",
-                user_id=command_context.user.user_id,
-                role=command_context.user.role.value
+                f"Help command processed | "
+                f"User: {command_context.user.user_id} | "
+                f"Role: {command_context.user.role.value}"
             )
             
         except Exception as e:
@@ -752,8 +619,7 @@ class CommandHandler:
             )
             
             logger.info(
-                "Status command processed",
-                user_id=command_context.user.user_id
+                f"Status command processed | User: {command_context.user.user_id}"
             )
             
         except Exception as e:
@@ -763,6 +629,12 @@ class CommandHandler:
     def _parse_trade_parameters(self, command_text: str) -> Dict[str, Any]:
         """
         Parse trade command parameters from command text.
+        
+        Supports formats like:
+        - "/trade 500 buy aapl"
+        - "/trade buy 500 aapl"
+        - "/trade aapl buy 500"
+        - "/trade sell 100 tsla"
         
         Args:
             command_text: Raw command text after /trade
@@ -775,18 +647,21 @@ class CommandHandler:
         if not command_text:
             return parameters
         
-        # Simple parameter parsing (can be enhanced with more sophisticated parsing)
-        parts = command_text.split()
+        # Clean and split the command text
+        parts = [part.strip().upper() for part in command_text.split() if part.strip()]
         
-        for i, part in enumerate(parts):
-            part = part.upper()
-            
-            # Try to identify symbol (first alphabetic part)
-            if part.isalpha() and len(part) <= 5 and 'symbol' not in parameters:
-                parameters['symbol'] = part
+        if not parts:
+            return parameters
+        
+        # Parse each part and categorize
+        for part in parts:
+            # Check for trade type (BUY/SELL)
+            if part in ['BUY', 'SELL'] and 'trade_type' not in parameters:
+                from models.trade import TradeType
+                parameters['trade_type'] = TradeType.BUY if part == 'BUY' else TradeType.SELL
                 continue
             
-            # Try to identify quantity (numeric part)
+            # Check for quantity (integer)
             if part.isdigit() and 'quantity' not in parameters:
                 try:
                     quantity = int(part)
@@ -796,7 +671,12 @@ class CommandHandler:
                 except ValueError:
                     pass
             
-            # Try to identify price (decimal number)
+            # Check for symbol (alphabetic, 1-5 characters)
+            if part.isalpha() and 1 <= len(part) <= 5 and 'symbol' not in parameters:
+                parameters['symbol'] = part
+                continue
+            
+            # Check for price (decimal number)
             try:
                 price = float(part)
                 if price > 0 and 'price' not in parameters:
@@ -804,12 +684,6 @@ class CommandHandler:
                     continue
             except ValueError:
                 pass
-            
-            # Try to identify trade type
-            if part in ['BUY', 'SELL'] and 'trade_type' not in parameters:
-                from models.trade import TradeType
-                parameters['trade_type'] = TradeType.BUY if part == 'BUY' else TradeType.SELL
-                continue
         
         return parameters
     
@@ -818,10 +692,22 @@ class CommandHandler:
         base_help = (
             "🤖 *Jain Global Trading Bot Help*\n\n"
             "*Available Commands:*\n"
-            "• `/trade` - Open trade execution interface\n"
+            "• `/trade` - Open enhanced interactive trading interface\n"
+            "• `/trade aapl` - Pre-filled with symbol\n"
+            "• `/trade 500 buy aapl` - Pre-filled trade parameters\n"
             "• `/portfolio` - View portfolio dashboard (App Home)\n"
             "• `/help` - Show this help message\n"
             "• `/status` - Show system and user status\n\n"
+            "*Enhanced Trade Features:*\n"
+            "• 🧮 Real-time GMV ↔ Shares calculations\n"
+            "• 📊 Live market data and price updates\n"
+            "• 🎯 Multiple order types (Market, Limit, Stop, Stop Limit)\n"
+            "• ⚡ Dynamic field updates as you type\n"
+            "• 🔄 Interactive calculations and validations\n\n"
+            "*Trade Command Formats:*\n"
+            "• `/trade [symbol]` - Open with symbol pre-filled\n"
+            "• `/trade [quantity] [buy/sell] [symbol]`\n"
+            "• `/trade [buy/sell] [quantity] [symbol]`\n\n"
         )
         
         role_specific = ""
@@ -849,10 +735,13 @@ class CommandHandler:
         
         usage_tips = (
             "*Usage Tips:*\n"
-            "• Use `/trade AAPL 100 BUY` for quick trade entry\n"
+            "• Use `/trade AAPL` to open interactive modal with live AAPL data\n"
+            "• Type in Shares field → GMV auto-calculates\n"
+            "• Type in GMV field → Shares auto-calculates\n"
+            "• Change symbol → Live price updates automatically\n"
+            "• Select Limit/Stop orders → Limit price field appears\n"
             "• Commands only work in approved private channels\n"
-            "• Check App Home for portfolio and trade history\n"
-            "• High-risk trades require additional confirmation\n\n"
+            "• Check App Home for portfolio and trade history\n\n"
             "*Need Help?* Contact your system administrator or Portfolio Manager."
         )
         
@@ -905,15 +794,15 @@ class CommandHandler:
                 'channel_id': command_context.channel_id,
                 'success': success,
                 'error_type': error_type,
-                'response_time_ms': response_time * 1000,
-                'parameters': command_context.parameters,
+                'response_time_ms': int(response_time * 1000),
+                'parameters': self._sanitize_parameters_for_dynamodb(command_context.parameters),
                 'ip_address': command_context.ip_address,
                 'user_agent': command_context.user_agent,
                 'request_id': command_context.request_id
             }
             
             # Log to database audit trail
-            await self.db_service.log_audit_event(
+            self.db_service._log_audit_event(
                 'command_executed',
                 command_context.user.user_id if command_context.user else command_context.slack_user_id,
                 audit_data
@@ -921,6 +810,21 @@ class CommandHandler:
             
         except Exception as e:
             logger.error(f"Failed to log audit event: {str(e)}")
+    
+    def _sanitize_parameters_for_dynamodb(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Sanitize parameters to be DynamoDB compatible (no floats)."""
+        sanitized = {}
+        for key, value in parameters.items():
+            if isinstance(value, float):
+                # Convert float to string to avoid DynamoDB issues
+                sanitized[key] = str(value)
+            elif hasattr(value, 'value'):  # Handle enums
+                sanitized[key] = value.value
+            else:
+                sanitized[key] = value
+        return sanitized
+    
+
 
 
 # Global command handler instance
@@ -949,59 +853,67 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
     auth_service = container.get(AuthService)
     database_service = container.get(DatabaseService)
     
-    # Create command handler
+    # Create command handler for non-trade commands
     command_handler = CommandHandler(auth_service, database_service)
     
+    # ========================================
+    # REGULAR /TRADE COMMAND WITH PRE-FILLED FORM
+    # ========================================
+    
+    # Register the regular trade command that shows the proper Block Kit form
     @app.command("/trade")
     def handle_trade_command(ack, body, client, context):
-        """Handle the /trade slash command."""
-        ack()  # Acknowledge immediately BEFORE async processing
+        """Handle the /trade slash command with pre-filled form."""
+        ack()  # Acknowledge immediately
+        
+        # Run the async command in a thread
+        import threading
         import asyncio
-        # Create a dummy ack since we already called it
-        dummy_ack = lambda: None
-        asyncio.run(command_handler.process_command(
-            CommandType.TRADE, body, client, dummy_ack, context
-        ))
+        
+        def run_async_command():
+            try:
+                # Create new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                # Run the async command
+                loop.run_until_complete(
+                    command_handler.process_command(
+                        CommandType.TRADE, body, client, ack, context
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Trade command error: {e}")
+            finally:
+                loop.close()
+        
+        # Start the async command in a separate thread
+        thread = threading.Thread(target=run_async_command)
+        thread.start()
+    
+    logger.info("✅ Enhanced /trade command registered successfully")
+    logger.info("🎯 Features: interactive modal, real-time GMV↔Shares calculations, multiple order types, live price updates")
     
     @app.command("/portfolio")
-    def handle_portfolio_command(ack, body, client, context):
+    async def handle_portfolio_command(ack, body, client, context):
         """Handle the /portfolio slash command."""
-        ack()  # Acknowledge immediately BEFORE async processing
-        import asyncio
-        dummy_ack = lambda: None
-        asyncio.run(command_handler.process_command(
-            CommandType.PORTFOLIO, body, client, dummy_ack, context
-        ))
-    
-    @app.command("/pm-dashboard")
-    def handle_pm_dashboard_command(ack, body, client, context):
-        """Handle the /pm-dashboard slash command for Portfolio Managers."""
-        ack()  # Acknowledge immediately BEFORE async processing
-        import asyncio
-        dummy_ack = lambda: None
-        asyncio.run(command_handler.process_command(
-            CommandType.PM_DASHBOARD, body, client, dummy_ack, context
-        ))
+        await command_handler.process_command(
+            CommandType.PORTFOLIO, body, client, ack, context
+        )
     
     @app.command("/help")
-    def handle_help_command(ack, body, client, context):
+    async def handle_help_command(ack, body, client, context):
         """Handle the /help slash command."""
-        ack()  # Acknowledge immediately BEFORE async processing
-        import asyncio
-        dummy_ack = lambda: None
-        asyncio.run(command_handler.process_command(
-            CommandType.HELP, body, client, dummy_ack, context
-        ))
+        await command_handler.process_command(
+            CommandType.HELP, body, client, ack, context
+        )
     
     @app.command("/status")
-    def handle_status_command(ack, body, client, context):
+    async def handle_status_command(ack, body, client, context):
         """Handle the /status slash command."""
-        ack()  # Acknowledge immediately BEFORE async processing
-        import asyncio
-        dummy_ack = lambda: None
-        asyncio.run(command_handler.process_command(
-            CommandType.STATUS, body, client, dummy_ack, context
-        ))
+        await command_handler.process_command(
+            CommandType.STATUS, body, client, ack, context
+        )
     
     # Store handler globally for metrics access
     global _command_handler
@@ -1045,8 +957,6 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
                 'status': CommandType.STATUS,
                 'portfolio': CommandType.PORTFOLIO,
                 'trade': CommandType.TRADE,
-                'pm-dashboard': 'pm-dashboard',
-                'pm dashboard': 'pm-dashboard',
                 'dashboard': 'dashboard',
                 'quote': 'quote'
             }
@@ -1166,24 +1076,6 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
                     say(blocks=trade_blocks, text="🚀 Trading Interface")
                 except Exception as e:
                     say(f"🚀 *Trading Interface*\n\nUse: `@TestingTradingBot quote AAPL` for quotes\n\nError: {str(e)}")
-                
-            elif command_text in ['pm-dashboard', 'pm dashboard']:
-                # Portfolio Manager Dashboard - show all portfolios
-                say(f"""
-📊 *Portfolio Manager Dashboard*
-
-To access the full PM dashboard with all trader portfolios, use:
-`/pm-dashboard`
-
-*Features:*
-• View all trader portfolios
-• Aggregate P&L and AUM
-• Top performers ranking
-• Live trade feed
-• Risk alerts
-
-_Note: Requires Portfolio Manager or Admin permissions_
-                """)
                 
             elif command_text == 'dashboard':
                 # Create a simple Block Kit dashboard

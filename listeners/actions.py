@@ -14,6 +14,7 @@ detailed audit trails and providing rich user feedback throughout the process.
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -58,6 +59,7 @@ class ActionType(Enum):
     CANCEL_TRADE = "cancel_trade"
     REFRESH_DATA = "refresh_data"
     VIEW_DETAILS = "view_details"
+    START_TRADE = "start_trade"
 
 
 class ActionError(Exception):
@@ -228,7 +230,8 @@ class ActionHandler:
             ActionType.CONFIRM_HIGH_RISK: self._handle_confirm_high_risk,
             ActionType.CANCEL_TRADE: self._handle_cancel_trade,
             ActionType.REFRESH_DATA: self._handle_refresh_data,
-            ActionType.VIEW_DETAILS: self._handle_view_details
+            ActionType.VIEW_DETAILS: self._handle_view_details,
+            ActionType.START_TRADE: self._handle_start_trade
         }
         
         # State management for ongoing operations
@@ -255,7 +258,7 @@ class ActionHandler:
         
         try:
             # Acknowledge action immediately (within 3 seconds)
-            ack()
+            await ack()
             
             # Create action context
             action_context = self._create_action_context(action_type, body, context)
@@ -620,6 +623,18 @@ class ActionHandler:
                         "CONFIRMATION_REQUIRED"
                     )
             
+            # Create trade object
+            trade = Trade(
+                trade_id=str(uuid.uuid4()),
+                user_id=action_context.user.user_id,
+                symbol=trade_data['symbol'],
+                quantity=trade_data['quantity'],
+                trade_type=trade_data['trade_type'],
+                price=trade_data['price'],
+                timestamp=datetime.now(timezone.utc),
+                status=TradeStatus.PENDING
+            )
+            
             # Update modal to show submitting state
             widget_context = self._create_widget_context(action_context)
             widget_context.state = WidgetState.SUBMITTING
@@ -627,85 +642,66 @@ class ActionHandler:
             submitting_modal = self.trade_widget.create_trade_modal(widget_context)
             await self._update_modal(client, action_context.view_id, submitting_modal)
             
-            # Execute trade with complete portfolio update using orchestrator
-            trade, portfolio, execution_report = await self.trading_api_service.execute_trade_with_portfolio_update(
-                user_id=action_context.user.user_id,
-                symbol=trade_data['symbol'],
-                quantity=trade_data['quantity'],
-                trade_type=trade_data['trade_type'].value,
-                channel_id=action_context.channel_id,
-                notes=f"Executed via Slack by {action_context.user.profile.display_name}"
-            )
+            # Log trade to database
+            await self.db_service.log_trade(trade)
             
-            # Send success notification with portfolio update
-            message = (
-                f"✅ *Trade Executed Successfully*\n\n"
-                f"*Trade Details:*\n"
-                f"• Symbol: {trade.symbol}\n"
-                f"• Type: {trade.trade_type.value.title()}\n"
-                f"• Quantity: {trade.quantity:,}\n"
-                f"• Execution Price: {format_money(execution_report.average_fill_price)}\n"
-                f"• Total Value: {format_money(execution_report.total_execution_value)}\n"
-                f"• Commission: {format_money(execution_report.total_commission)}\n"
-                f"• Execution ID: {execution_report.execution_id}\n\n"
-                f"*Portfolio Update:*\n"
-                f"• Total Value: {format_money(portfolio.total_value)}\n"
-                f"• Cash Balance: {format_money(portfolio.cash_balance)}\n"
-                f"• Total P&L: {format_money(portfolio.total_pnl)} ({format_percent(portfolio.total_pnl / portfolio.total_cost_basis * 100 if portfolio.total_cost_basis > 0 else 0)})\n"
-                f"• Active Positions: {len(portfolio.get_active_positions())}\n\n"
-                f"🕐 {trade.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-            )
+            # Submit trade to trading API
+            execution_result = await self.trading_api_service.execute_trade(trade)
             
-            await asyncio.to_thread(
-                client.chat_postEphemeral,
-                channel=action_context.channel_id,
-                user=action_context.slack_user_id,
-                text=message
-            )
-            
-            # Send notification to Portfolio Manager if high-risk trade
-            if trade.risk_level in [RiskLevel.HIGH, RiskLevel.CRITICAL]:
-                await self.notification_service.send_high_risk_notification(
-                    client, action_context.user, trade
+            # Update trade status based on execution result
+            if execution_result.success:
+                trade.status = TradeStatus.EXECUTED
+                trade.execution_id = execution_result.execution_id
+                
+                # Update position
+                await self.db_service.update_position(
+                    trade.user_id,
+                    trade.symbol,
+                    trade.quantity if trade.trade_type == TradeType.BUY else -trade.quantity,
+                    trade.price,
+                    trade.trade_id
                 )
+                
+                # Send success notification
+                await self._send_trade_success_notification(client, action_context, trade, execution_result)
+                
+            else:
+                trade.status = TradeStatus.FAILED
+                
+                # Send failure notification
+                await self._send_trade_failure_notification(client, action_context, trade, execution_result.error_message)
+            
+            # Update trade in database
+            await self.db_service.update_trade_status(
+                trade.user_id,
+                trade.trade_id,
+                trade.status,
+                {
+                    'execution_id': execution_result.execution_id,
+                    'execution_price': str(execution_result.execution_price) if execution_result.execution_price else None,
+                    'execution_timestamp': execution_result.execution_timestamp.isoformat() if execution_result.execution_timestamp else None,
+                    'error_message': execution_result.error_message
+                }
+            )
             
             # Close modal
             await self._close_modal(client, action_context.view_id)
             
             logger.info(
-                "Trade executed successfully with portfolio update",
+                "Trade submitted successfully",
                 user_id=action_context.user.user_id,
                 trade_id=trade.trade_id,
                 status=trade.status.value,
-                execution_id=execution_report.execution_id,
-                portfolio_value=float(portfolio.total_value),
-                portfolio_pnl=float(portfolio.total_pnl)
+                execution_id=execution_result.execution_id
             )
             
         except ValidationError as e:
             raise ActionValidationError(str(e), "VALIDATION_FAILED")
-        except TradingError as e:
-            # Send failure notification
-            error_message = (
-                f"❌ *Trade Execution Failed*\n\n"
-                f"• Symbol: {trade_data.get('symbol', 'N/A')}\n"
-                f"• Type: {trade_data.get('trade_type', 'N/A').value.title() if trade_data.get('trade_type') else 'N/A'}\n"
-                f"• Quantity: {trade_data.get('quantity', 0):,}\n"
-                f"• Error: {e.message}\n\n"
-                f"Please try again or contact support if the issue persists."
-            )
-            
-            await asyncio.to_thread(
-                client.chat_postEphemeral,
-                channel=action_context.channel_id,
-                user=action_context.slack_user_id,
-                text=error_message
-            )
-            
+        except TradingError:
             # Re-raise trading errors
             raise
         except Exception as e:
-            logger.error(f"Unexpected error submitting trade: {str(e)}", exc_info=True)
+            logger.error(f"Unexpected error submitting trade: {str(e)}")
             raise ActionProcessingError(f"Failed to submit trade: {str(e)}", "TRADE_SUBMIT_FAILED")
     
     async def _handle_confirm_high_risk(self, action_context: ActionContext, client: WebClient) -> None:
@@ -787,6 +783,28 @@ class ActionHandler:
         except Exception as e:
             logger.error(f"Error handling view details: {str(e)}")
             raise ActionProcessingError(f"Failed to show details: {str(e)}", "VIEW_DETAILS_FAILED")
+    
+    async def _handle_start_trade(self, action_context: ActionContext, client: WebClient) -> None:
+        """Handle start trade action."""
+        try:
+            logger.info(
+                "Start trade requested",
+                user_id=action_context.user.user_id,
+                request_id=action_context.request_id
+            )
+            
+            # For now, show a confirmation message
+            # This could be expanded to open a trade execution modal
+            await asyncio.to_thread(
+                client.chat_postEphemeral,
+                channel=action_context.channel_id,
+                user=action_context.slack_user_id,
+                text="🚀 Trade execution initiated! This feature is being developed."
+            )
+            
+        except Exception as e:
+            logger.error(f"Error handling start trade: {str(e)}")
+            raise ActionProcessingError(f"Failed to start trade: {str(e)}", "START_TRADE_FAILED")
     
     def _extract_form_value(self, action_context: ActionContext, block_id: str, action_id: str) -> Optional[str]:
         """Extract value from form state."""
@@ -1081,447 +1099,347 @@ def register_action_handlers(app: App, service_container: Optional['ServiceConta
             ActionType.CANCEL_TRADE, body, client, ack, context
         )
     
-    @app.action("buy_stock")
-    async def handle_buy_stock_button(ack, body, client, context):
-        """Handle Buy Stock button click - opens trade modal."""
-        ack()
+    @app.action("buy_shares")
+    async def handle_buy_shares(ack, body, client, context):
+        """Handle buy shares button click."""
+        await ack()
+        
+        user_id = body.get('user', {}).get('id', 'unknown')
+        logger.info(f"✅ Buy shares button clicked by user: {user_id}")
+        
         try:
-            from ui.trade_widget import TradeWidget, WidgetContext, WidgetState, UITheme
-            from models.trade import TradeType
+            # Get trading service and execute trade
+            from services.service_container import get_trading_api_service
+            from models.trade import Trade, TradeType
+            import uuid
+            from datetime import datetime
+            from decimal import Decimal
             
-            # Get user info
-            user_id = body['user']['id']
-            trigger_id = body['trigger_id']
+            trading_service = get_trading_api_service()
             
-            # Authenticate user
-            user, session = await auth_service.authenticate_slack_user(
-                user_id,
-                body['user'].get('team_id'),
-                body.get('channel', {}).get('id')
+            # Create trade object
+            trade = Trade(
+                trade_id=str(uuid.uuid4()),
+                user_id=user_id,
+                symbol='AAPL',
+                trade_type=TradeType.BUY,
+                quantity=10,
+                price=Decimal('256.48'),
+                timestamp=datetime.utcnow()
             )
             
-            # Create widget context with BUY pre-selected
-            widget = TradeWidget()
-            widget_context = WidgetContext(
-                user=user,
-                channel_id=body.get('channel', {}).get('id', ''),
-                trigger_id=trigger_id,
-                state=WidgetState.INITIAL,
-                theme=UITheme.STANDARD
-            )
-            widget_context.trade_type = TradeType.BUY
+            # Execute the trade
+            execution_report = await trading_service.execute_trade(trade)
             
-            # Create and open modal
-            modal = widget.create_trade_modal(widget_context)
+            # Determine execution method for display
+            execution_method = "🚀 Alpaca Paper Trading" if trading_service.alpaca_service.is_available() else "📝 Simulation"
             
-            await asyncio.to_thread(
-                client.views_open,
-                trigger_id=trigger_id,
-                view=modal
-            )
-            
-            logger.info(f"Buy modal opened for user {user_id}")
-            
-        except Exception as e:
-            logger.error(f"Error opening buy modal: {str(e)}", exc_info=True)
-            await asyncio.to_thread(
-                client.chat_postEphemeral,
-                channel=body.get('channel', {}).get('id'),
-                user=user_id,
-                text=f"❌ Error opening trade form: {str(e)}"
-            )
-    
-    @app.action("sell_stock")
-    async def handle_sell_stock_button(ack, body, client, context):
-        """Handle Sell Stock button click - opens trade modal."""
-        ack()
-        try:
-            from ui.trade_widget import TradeWidget, WidgetContext, WidgetState, UITheme
-            from models.trade import TradeType
-            
-            # Get user info
-            user_id = body['user']['id']
-            trigger_id = body['trigger_id']
-            
-            # Authenticate user
-            user, session = await auth_service.authenticate_slack_user(
-                user_id,
-                body['user'].get('team_id'),
-                body.get('channel', {}).get('id')
-            )
-            
-            # Create widget context with SELL pre-selected
-            widget = TradeWidget()
-            widget_context = WidgetContext(
-                user=user,
-                channel_id=body.get('channel', {}).get('id', ''),
-                trigger_id=trigger_id,
-                state=WidgetState.INITIAL,
-                theme=UITheme.STANDARD
-            )
-            widget_context.trade_type = TradeType.SELL
-            
-            # Create and open modal
-            modal = widget.create_trade_modal(widget_context)
-            
-            await asyncio.to_thread(
-                client.views_open,
-                trigger_id=trigger_id,
-                view=modal
-            )
-            
-            logger.info(f"Sell modal opened for user {user_id}")
-            
-        except Exception as e:
-            logger.error(f"Error opening sell modal: {str(e)}", exc_info=True)
-            await asyncio.to_thread(
-                client.chat_postEphemeral,
-                channel=body.get('channel', {}).get('id'),
-                user=user_id,
-                text=f"❌ Error opening trade form: {str(e)}"
-            )
-    
-    # Dashboard button handlers
-    @app.action("start_trading")
-    def handle_start_trading_button(ack, body, client):
-        """Handle Start Trading button from dashboard."""
-        ack()
-        try:
-            user_id = body['user']['id']
-            channel_id = body.get('channel', {}).get('id', '')
-            
-            # Show trade interface with Buy/Sell buttons
-            blocks = [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "🚀 Trading Interface"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": "*Select a trading action:*"}
-                },
-                {
-                    "type": "actions",
-                    "elements": [
+            # Update modal to show trade confirmation
+            view_id = body.get('view', {}).get('id')
+            if view_id:
+                confirmation_view = {
+                    "type": "modal",
+                    "callback_id": "trade_confirmation_modal",
+                    "title": {
+                        "type": "plain_text",
+                        "text": "✅ Trade Executed"
+                    },
+                    "blocks": [
                         {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "📈 Buy Stock"},
-                            "style": "primary",
-                            "action_id": "buy_stock"
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"🎉 *Trade Executed Successfully!*\n\n📊 *Stock:* {trade.symbol}\n📈 *Action:* BUY\n💰 *Quantity:* {trade.quantity} shares\n💵 *Avg Price:* ${execution_report.average_fill_price}\n💸 *Total:* ${execution_report.total_value}"
+                            }
                         },
                         {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "📉 Sell Stock"},
-                            "style": "danger",
-                            "action_id": "sell_stock"
-                        }
-                    ]
-                },
-                {
-                    "type": "context",
-                    "elements": [
+                            "type": "divider"
+                        },
                         {
-                            "type": "mrkdwn",
-                            "text": "🛡️ *Mock Mode:* All trades are simulated for safe testing"
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"✅ *Order Status:* {execution_report.status.value}\n⏰ *Execution Time:* Just now\n🏢 *Method:* {execution_method}\n📋 *Order ID:* {execution_report.order_id[:8]}..."
+                            }
                         }
-                    ]
-                }
-            ]
-            
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                blocks=blocks,
-                text="Trading Interface"
-            )
-            
-            logger.info(f"Start Trading clicked by user {user_id}")
-            
-        except Exception as e:
-            logger.error(f"Error handling start trading: {str(e)}", exc_info=True)
-    
-    @app.action("view_positions")
-    def handle_view_positions_button(ack, body, client):
-        """Handle View Positions button from dashboard."""
-        ack()
-        try:
-            import asyncio
-            from services.database import get_database_service
-            from models.trade import TradeStatus
-            
-            user_id = body['user']['id']
-            channel_id = body.get('channel', {}).get('id', '')
-            
-            # Get database service and fetch portfolio + trades
-            db_service = asyncio.run(get_database_service())
-            portfolio = asyncio.run(db_service.get_or_create_default_portfolio(user_id))
-            trades = asyncio.run(db_service.get_user_trades(user_id, limit=5, status_filter=TradeStatus.EXECUTED))
-            
-            # Build positions message
-            active_positions = portfolio.get_active_positions()
-            
-            message = f"📊 *Your Portfolio*\n\n"
-            message += f"*Account Overview:*\n"
-            message += f"• Cash Balance: ${portfolio.cash_balance:,.2f}\n"
-            message += f"• Total Value: ${portfolio.total_value:,.2f}\n"
-            message += f"• Total P&L: ${portfolio.total_pnl:,.2f}\n\n"
-            
-            if active_positions:
-                message += f"*Active Positions ({len(active_positions)}):*\n"
-                for pos in active_positions[:5]:
-                    pnl = pos.get_total_pnl()
-                    emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
-                    message += f"{emoji} *{pos.symbol}*: {pos.quantity:,} shares @ ${pos.current_price:.2f} | P&L: ${pnl:,.2f}\n"
-            else:
-                message += "*Active Positions:* None yet\n"
-            
-            # Add recent trades
-            if trades:
-                message += f"\n*Recent Trades:*\n"
-                for trade in trades[:3]:
-                    action = "BUY" if trade.trade_type.value == 'buy' else "SELL"
-                    emoji = "📥" if action == "BUY" else "📤"
-                    message += f"{emoji} {trade.symbol} - {action} {trade.quantity:,} @ ${trade.price:.2f}\n"
-            
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text=message
-            )
-            
-            logger.info(f"View Positions clicked by user {user_id}")
-            
-        except Exception as e:
-            logger.error(f"Error handling view positions: {str(e)}", exc_info=True)
-            try:
-                client.chat_postEphemeral(
-                    channel=channel_id,
-                    user=user_id,
-                    text=f"❌ Error loading positions: {str(e)}"
-                )
-            except:
-                pass
-    
-    @app.action("settings")
-    def handle_settings_button(ack, body, client):
-        """Handle Settings button from dashboard."""
-        ack()
-        try:
-            user_id = body['user']['id']
-            channel_id = body.get('channel', {}).get('id', '')
-            
-            # Show settings options
-            blocks = [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "⚙️ Settings"}
-                },
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": "*Trading Bot Settings*\n\nYour current settings:"
+                    ],
+                    "close": {
+                        "type": "plain_text",
+                        "text": "Close"
                     }
-                },
-                {
-                    "type": "section",
-                    "fields": [
-                        {
-                            "type": "mrkdwn",
-                            "text": "*Mode:*\nMock Trading"
-                        },
-                        {
-                            "type": "mrkdwn",
-                            "text": "*Starting Balance:*\n$100,000"
-                        },
-                        {
-                            "type": "mrkdwn",
-                            "text": "*Risk Level:*\nMedium"
-                        },
-                        {
-                            "type": "mrkdwn",
-                            "text": "*Notifications:*\nEnabled"
-                        }
-                    ]
-                },
-                {
-                    "type": "divider"
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": "💡 Settings customization coming soon!"
-                        }
-                    ]
                 }
-            ]
-            
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                blocks=blocks,
-                text="Settings"
-            )
-            
-            logger.info(f"Settings clicked by user {user_id}")
-            
+                
+                client.views_update(view_id=view_id, view=confirmation_view)
+                logger.info(f"Buy trade executed successfully: {execution_report.execution_id}")
+                
         except Exception as e:
-            logger.error(f"Error handling settings: {str(e)}", exc_info=True)
-    
-    # Portfolio Manager Dashboard button handlers
-    @app.action("pm_trade_feed")
-    def handle_pm_trade_feed(ack, body, client):
-        """Handle PM Trade Feed button - show all trades from all users."""
-        ack()
+            logger.error(f"Error executing buy trade: {str(e)}")
+            # Show error modal
+            view_id = body.get('view', {}).get('id')
+            if view_id:
+                error_view = {
+                    "type": "modal",
+                    "callback_id": "trade_error_modal",
+                    "title": {
+                        "type": "plain_text",
+                        "text": "❌ Trade Failed"
+                    },
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"❌ *Trade execution failed*\n\n📊 *Stock:* AAPL\n📈 *Action:* BUY\n💰 *Quantity:* 10 shares\n\n🔍 *Error:* {str(e)}"
+                            }
+                        }
+                    ],
+                    "close": {
+                        "type": "plain_text",
+                        "text": "Close"
+                    }
+                }
+                client.views_update(view_id=view_id, view=error_view)
+
+    @app.action("sell_shares")
+    async def handle_sell_shares(ack, body, client, context):
+        """Handle sell shares button click."""
+        await ack()
+        
+        user_id = body.get('user', {}).get('id', 'unknown')
+        logger.info(f"✅ Sell shares button clicked by user: {user_id}")
+        
         try:
-            import asyncio
-            from services.database import get_database_service
-            from models.trade import TradeStatus
+            # Get trading service and execute trade
+            from services.service_container import get_trading_api_service
+            from models.trade import Trade, TradeType
+            import uuid
+            from datetime import datetime
+            from decimal import Decimal
             
-            user_id = body['user']['id']
-            channel_id = body.get('channel', {}).get('id', '')
+            trading_service = get_trading_api_service()
             
-            # Get database service and fetch all recent trades
-            db_service = asyncio.run(get_database_service())
-            
-            # Get all portfolios to find all users
-            all_portfolios = asyncio.run(db_service.get_all_portfolios(limit=50))
-            
-            # Collect trades from all users
-            all_trades = []
-            for portfolio in all_portfolios:
-                user_trades = asyncio.run(db_service.get_user_trades(
-                    portfolio.user_id, 
-                    limit=10, 
-                    status_filter=TradeStatus.EXECUTED
-                ))
-                all_trades.extend(user_trades)
-            
-            # Sort by execution time (most recent first)
-            all_trades.sort(key=lambda t: t.execution_time or t.created_at, reverse=True)
-            
-            # Build trade feed message
-            message = f"🔄 *Live Trade Feed*\n\n"
-            message += f"*Recent Trades Across All Traders:*\n\n"
-            
-            if all_trades:
-                for trade in all_trades[:15]:  # Show last 15 trades
-                    action = "BUY" if trade.trade_type.value == 'buy' else "SELL"
-                    emoji = "📥" if action == "BUY" else "📤"
-                    timestamp = trade.execution_time.strftime("%H:%M") if trade.execution_time else "N/A"
-                    message += f"{emoji} `{timestamp}` | `{trade.user_id[:8]}` | {action} {trade.quantity:,} {trade.symbol} @ ${trade.price:.2f}\n"
-            else:
-                message += "_No trades yet_\n"
-            
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text=message
+            # Create trade object
+            trade = Trade(
+                trade_id=str(uuid.uuid4()),
+                user_id=user_id,
+                symbol='AAPL',
+                trade_type=TradeType.SELL,
+                quantity=10,
+                price=Decimal('256.48'),
+                timestamp=datetime.utcnow()
             )
             
-            logger.info(f"PM Trade Feed viewed by {user_id}, showing {len(all_trades)} trades")
+            # Execute the trade
+            execution_report = await trading_service.execute_trade(trade)
             
+            # Determine execution method for display
+            execution_method = "🚀 Alpaca Paper Trading" if trading_service.alpaca_service.is_available() else "📝 Simulation"
+            
+            # Update modal to show trade confirmation
+            view_id = body.get('view', {}).get('id')
+            if view_id:
+                confirmation_view = {
+                    "type": "modal",
+                    "callback_id": "trade_confirmation_modal",
+                    "title": {
+                        "type": "plain_text",
+                        "text": "✅ Trade Executed"
+                    },
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"🎉 *Trade Executed Successfully!*\n\n📊 *Stock:* {trade.symbol}\n📉 *Action:* SELL\n💰 *Quantity:* {trade.quantity} shares\n💵 *Avg Price:* ${execution_report.average_fill_price}\n💸 *Total:* ${execution_report.total_value}"
+                            }
+                        },
+                        {
+                            "type": "divider"
+                        },
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"✅ *Order Status:* {execution_report.status.value}\n⏰ *Execution Time:* Just now\n🏢 *Method:* {execution_method}\n📋 *Order ID:* {execution_report.order_id[:8]}..."
+                            }
+                        }
+                    ],
+                    "close": {
+                        "type": "plain_text",
+                        "text": "Close"
+                    }
+                }
+                
+                client.views_update(view_id=view_id, view=confirmation_view)
+                logger.info(f"Sell trade executed successfully: {execution_report.execution_id}")
+                
         except Exception as e:
-            logger.error(f"Error handling PM trade feed: {str(e)}", exc_info=True)
-            try:
-                client.chat_postEphemeral(
-                    channel=channel_id,
-                    user=user_id,
-                    text=f"❌ Error loading trade feed: {str(e)}"
+            logger.error(f"Error executing sell trade: {str(e)}")
+            # Show error modal
+            view_id = body.get('view', {}).get('id')
+            if view_id:
+                error_view = {
+                    "type": "modal",
+                    "callback_id": "trade_error_modal",
+                    "title": {
+                        "type": "plain_text",
+                        "text": "❌ Trade Failed"
+                    },
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"❌ *Trade execution failed*\n\n📊 *Stock:* AAPL\n📉 *Action:* SELL\n💰 *Quantity:* 10 shares\n\n🔍 *Error:* {str(e)}"
+                            }
+                        }
+                    ],
+                    "close": {
+                        "type": "plain_text",
+                        "text": "Close"
+                    }
+                }
+                client.views_update(view_id=view_id, view=error_view)
+
+    @app.action("back_to_market_data")
+    def handle_back_to_market_data(ack, body, client, context):
+        """Handle back to market data button click."""
+        ack()
+        logger.info("Back to market data button clicked")
+        # This will close the current modal and return to the previous view
+        # The enhanced trade command will handle showing the market data view
+    
+    @app.action("start_trade")
+    def handle_start_trade(ack, body, client, context):
+        """Handle start trade button click."""
+        ack()
+        
+        user_id = body.get('user', {}).get('id', 'unknown')
+        
+        # Try to get channel_id from different sources
+        channel_id = None
+        if 'channel' in body and body['channel']:
+            channel_id = body['channel'].get('id')
+        elif 'view' in body and 'private_metadata' in body['view']:
+            # Try to extract from modal metadata if available
+            metadata = body['view'].get('private_metadata', '')
+            if metadata and 'channel_id:' in metadata:
+                channel_id = metadata.split('channel_id:')[1].split(',')[0]
+        
+        # If still no channel, try to get from container context
+        if not channel_id:
+            # For modal interactions, we'll send a direct message instead
+            logger.info(f"No channel context available, will send DM to user {user_id}")
+        
+        logger.info(f"Start trade button clicked by user: {user_id}")
+        
+        try:
+            logger.info(f"Attempting to update modal for user {user_id}")
+            
+            # Update the existing modal with trade execution interface
+            view_id = body.get('view', {}).get('id')
+            if view_id:
+                updated_view = {
+                    "type": "modal",
+                    "callback_id": "trade_execution_modal",
+                    "title": {
+                        "type": "plain_text",
+                        "text": "🚀 Execute Trade"
+                    },
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "🚀 *Trade Execution Ready!*\n\n📊 *Stock:* AAPL\n💰 *Current Price:* $256.48\n📈 *Ready to trade*"
+                            }
+                        },
+                        {
+                            "type": "divider"
+                        },
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "*Choose your action:*"
+                            }
+                        },
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "text": {
+                                        "type": "plain_text",
+                                        "text": "📈 Buy 10 Shares"
+                                    },
+                                    "style": "primary",
+                                    "action_id": "buy_shares",
+                                    "value": "buy_10"
+                                },
+                                {
+                                    "type": "button",
+                                    "text": {
+                                        "type": "plain_text",
+                                        "text": "📉 Sell 10 Shares"
+                                    },
+                                    "style": "danger",
+                                    "action_id": "sell_shares",
+                                    "value": "sell_10"
+                                }
+                            ]
+                        },
+                        {
+                            "type": "context",
+                            "elements": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": "💡 This is a *simulation* - no real money involved!"
+                                }
+                            ]
+                        },
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "text": {
+                                        "type": "plain_text",
+                                        "text": "← Back to Market Data"
+                                    },
+                                    "action_id": "back_to_market_data",
+                                    "value": "back"
+                                }
+                            ]
+                        }
+                    ],
+                    "close": {
+                        "type": "plain_text",
+                        "text": "Close"
+                    }
+                }
+                
+                response = client.views_update(
+                    view_id=view_id,
+                    view=updated_view
                 )
-            except:
-                pass
-    
-    @app.action("pm_risk_alerts")
-    def handle_pm_risk_alerts(ack, body, client):
-        """Handle PM Risk Alerts button - show portfolios with concentration/risk issues."""
-        ack()
-        try:
-            import asyncio
-            from services.database import get_database_service
-            
-            user_id = body['user']['id']
-            channel_id = body.get('channel', {}).get('id', '')
-            
-            # Get all portfolios
-            db_service = asyncio.run(get_database_service())
-            all_portfolios = asyncio.run(db_service.get_all_portfolios(limit=50))
-            
-            # Analyze risk
-            alerts = []
-            
-            for portfolio in all_portfolios:
-                active_positions = portfolio.get_active_positions()
-                
-                # Check concentration (position > 20% of portfolio)
-                for pos in active_positions:
-                    position_value = pos.quantity * pos.current_price
-                    concentration = (position_value / portfolio.total_value * 100) if portfolio.total_value > 0 else 0
-                    
-                    if concentration > 20:
-                        alerts.append(f"⚠️ User `{portfolio.user_id[:8]}`: {pos.symbol} is {concentration:.1f}% of portfolio (>${position_value:,.0f})")
-                
-                # Check negative P&L > 10%
-                if portfolio.total_pnl < 0:
-                    loss_pct = abs(portfolio.total_pnl / portfolio.initial_balance * 100) if portfolio.initial_balance > 0 else 0
-                    if loss_pct > 10:
-                        alerts.append(f"🔴 User `{portfolio.user_id[:8]}`: Portfolio down {loss_pct:.1f}% (${portfolio.total_pnl:,.2f})")
-                
-                # Check too many positions (> 15)
-                if len(active_positions) > 15:
-                    alerts.append(f"📊 User `{portfolio.user_id[:8]}`: {len(active_positions)} active positions (diversification risk)")
-            
-            # Build alert message
-            message = f"⚠️ *Risk Alerts*\n\n"
-            
-            if alerts:
-                message += "*Active Alerts:*\n"
-                for alert in alerts[:10]:  # Show top 10 alerts
-                    message += f"• {alert}\n"
+                logger.info(f"Modal updated successfully: {response.get('ok', False)}")
             else:
-                message += "✅ *No risk alerts*\nAll portfolios are within normal parameters.\n"
-            
-            message += f"\n_Showing {len(alerts)} alert(s) across {len(all_portfolios)} portfolio(s)_"
-            
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text=message
-            )
-            
-            logger.info(f"PM Risk Alerts viewed by {user_id}, {len(alerts)} alerts found")
+                logger.error("No view_id found - cannot update modal")
             
         except Exception as e:
-            logger.error(f"Error handling PM risk alerts: {str(e)}", exc_info=True)
+            logger.error(f"Error sending trade execution message: {str(e)}")
+            # Final fallback: simple text message
             try:
-                client.chat_postEphemeral(
-                    channel=channel_id,
-                    user=user_id,
-                    text=f"❌ Error loading risk alerts: {str(e)}"
-                )
-            except:
-                pass
-    
-    @app.action("pm_refresh")
-    def handle_pm_refresh(ack, body, client):
-        """Handle PM Refresh button - reload dashboard."""
-        ack()
-        try:
-            user_id = body['user']['id']
-            channel_id = body.get('channel', {}).get('id', '')
-            
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text="🔄 Refreshing dashboard...\n\nPlease use `/pm-dashboard` to reload with latest data."
-            )
-            
-            logger.info(f"PM Dashboard refresh requested by {user_id}")
-            
-        except Exception as e:
-            logger.error(f"Error handling PM refresh: {str(e)}", exc_info=True)
+                if channel_id:
+                    fallback_response = client.chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text="🚀 Trade execution initiated! Your trading system is working. (This is a simulation)"
+                    )
+                    logger.info(f"Fallback message sent: {fallback_response.get('ok', False)}")
+            except Exception as fallback_error:
+                logger.error(f"Even fallback message failed: {str(fallback_error)}")
     
     # Modal submission handlers
     @app.view("trade_modal")
@@ -1538,16 +1456,8 @@ def register_action_handlers(app: App, service_container: Optional['ServiceConta
             ActionType.CONFIRM_HIGH_RISK, body, client, ack, context
         )
     
-    # Generic action handler - TEMPORARILY DISABLED (was causing regex errors)
-    # @app.action({"action_id": {"type": "regex", "pattern": r".*"}})
-    # async def handle_generic_action(ack, body, client, context):
-    #     """Handle any unhandled actions."""
-    #     ack()
-    #     logger.warning(
-    #         "Unhandled action received",
-    #         action_id=body.get('actions', [{}])[0].get('action_id', 'unknown'),
-    #         callback_id=body.get('callback_id', 'unknown')
-    #     )
+    # Note: Generic catch-all handler removed to prevent conflicts with specific handlers
+    # Specific action handlers are registered in their respective modules
     
     # Store handler globally for metrics access
     global _action_handler

@@ -910,7 +910,7 @@ def register_event_handlers(app: App, service_container: Optional['ServiceContai
     @app.action("refresh_dashboard")
     async def handle_refresh_dashboard(ack, body, client, context):
         """Handle dashboard refresh button click."""
-        ack()
+        await ack()
         
         user_id = body['user']['id']
         

@@ -3,6 +3,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Cache directories
+.pytest_cache/
+*.cache/
+
+# Log files
+logs/*.log
+*.log
+
 # C extensions
 *.so
 
@@ -150,10 +158,5 @@ Thumbs.db
 # Application specific
 *.log
 .pytest_cache/
-node_modules/
-# Secrets & build
-.env
-*.env
-**/__pycache__/
-*.pyc
-trading_api/.env
+node_modules/docker/dynamodb/shared-local-instance.db
+docker/

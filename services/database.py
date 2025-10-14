@@ -27,6 +27,9 @@ from models.trade import Trade, TradeStatus, TradeType, RiskLevel, TradeValidati
 from models.user import User, UserRole, UserStatus, Permission, UserProfile, UserValidationError
 from models.portfolio import Portfolio, Position, PortfolioStatus, PositionType, PortfolioValidationError
 
+# Import serialization utilities
+from utils.serializers import serialize_for_dynamodb, deserialize_from_dynamodb
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -81,29 +84,37 @@ class DatabaseService:
     - Audit trail logging
     """
     
-    def __init__(self, region_name: str = 'us-east-1', endpoint_url: Optional[str] = None,
+    def __init__(self, region_name: str = None, endpoint_url: Optional[str] = None,
                  max_retries: int = 3, timeout: int = 30):
         """
         Initialize the database service.
         
         Args:
-            region_name: AWS region name
-            endpoint_url: DynamoDB endpoint URL (for local development)
+            region_name: AWS region name (defaults to environment variable)
+            endpoint_url: DynamoDB endpoint URL (auto-detected for local development)
             max_retries: Maximum number of retry attempts
             timeout: Connection timeout in seconds
         """
-        self.region_name = region_name
-        self.endpoint_url = endpoint_url
+        # Auto-detect configuration from environment
+        self.region_name = region_name or os.getenv('AWS_REGION', 'us-east-1')
+        
+        # Auto-detect local endpoint for development
+        if endpoint_url is None and os.getenv('AWS_ACCESS_KEY_ID') == 'local':
+            self.endpoint_url = os.getenv('DYNAMODB_LOCAL_ENDPOINT', 'http://localhost:8000')
+        else:
+            self.endpoint_url = endpoint_url
+            
         self.max_retries = max_retries
         self.timeout = timeout
         
-        # Table names
-        self.trades_table_name = 'slack-trading-bot-trades'
-        self.positions_table_name = 'slack-trading-bot-positions'
-        self.users_table_name = 'slack-trading-bot-users'
-        self.channels_table_name = 'slack-trading-bot-channels'
-        self.portfolios_table_name = 'slack-trading-bot-portfolios'
-        self.audit_table_name = 'slack-trading-bot-audit'
+        # Table names from environment configuration
+        table_prefix = os.getenv('DYNAMODB_TABLE_PREFIX', 'jain-trading-bot')
+        self.trades_table_name = f'{table_prefix}-trades'
+        self.positions_table_name = f'{table_prefix}-positions'
+        self.users_table_name = f'{table_prefix}-users'
+        self.channels_table_name = f'{table_prefix}-channels'
+        self.portfolios_table_name = f'{table_prefix}-portfolios'
+        self.audit_table_name = f'{table_prefix}-audit'
         
         # Connection and client setup
         self._dynamodb_client = None
@@ -135,6 +146,8 @@ class DatabaseService:
     
     def _use_mock_mode(self) -> None:
         """Initialize mock database for development."""
+        from models.user import User, UserRole, UserStatus, UserProfile
+        
         self.mock_data = {
             'users': {},
             'trades': {},
@@ -142,24 +155,78 @@ class DatabaseService:
             'portfolios': {}
         }
         self.is_mock_mode = True
+        
+        # Create a default test user for development
+        test_profile = UserProfile(
+            display_name="Test User",
+            email="test@example.com",
+            department="Trading"
+        )
+        
+        test_user = User(
+            user_id="test-user-123",
+            slack_user_id="U08GVN6F4FQ",  # The user ID from the error
+            role=UserRole.EXECUTION_TRADER,
+            profile=test_profile,
+            status=UserStatus.ACTIVE
+        )
+        
+        # Store the test user
+        self.mock_data['users']['test-user-123'] = test_user
+        
         logger.info("DatabaseService initialized in MOCK MODE for development")
         
         # Override methods with mock implementations
         self.get_user = self._mock_get_user
+        self.get_user_by_slack_id = self._mock_get_user_by_slack_id
         self.create_user = self._mock_create_user
+        self.update_user = self._mock_update_user
+        self.get_users_by_role = self._mock_get_users_by_role
+        self.get_users_by_portfolio_manager = self._mock_get_users_by_portfolio_manager
         self.get_trade = self._mock_get_trade
         self.log_trade = self._mock_log_trade
         self.get_user_positions = self._mock_get_user_positions
         self.update_position = self._mock_update_position
+        self._log_audit_event = self._mock_log_audit_event
     
     async def _mock_get_user(self, user_id: str) -> Optional[User]:
         """Mock implementation for get_user."""
         return self.mock_data['users'].get(user_id)
     
+    async def _mock_get_user_by_slack_id(self, slack_user_id: str) -> Optional[User]:
+        """Mock implementation for get_user_by_slack_id."""
+        # Search through users to find one with matching slack_user_id
+        for user in self.mock_data['users'].values():
+            if hasattr(user, 'slack_user_id') and user.slack_user_id == slack_user_id:
+                return user
+        return None
+    
     async def _mock_create_user(self, user: User) -> bool:
         """Mock implementation for create_user."""
         self.mock_data['users'][user.user_id] = user
         return True
+    
+    async def _mock_update_user(self, user: User) -> bool:
+        """Mock implementation for update_user."""
+        self.mock_data['users'][user.user_id] = user
+        return True
+    
+    async def _mock_get_users_by_role(self, role) -> List:
+        """Mock implementation for get_users_by_role."""
+        from models.user import UserRole
+        if isinstance(role, str):
+            role = UserRole(role)
+        return [user for user in self.mock_data['users'].values() if user.role == role]
+    
+    async def _mock_get_users_by_portfolio_manager(self, pm_id: str) -> List:
+        """Mock implementation for get_users_by_portfolio_manager."""
+        return [user for user in self.mock_data['users'].values() 
+                if user.portfolio_manager_id == pm_id]
+    
+    def _mock_log_audit_event(self, event_type: str, user_id: str, details: dict) -> None:
+        """Mock implementation for _log_audit_event."""
+        # Just log it, don't store anything
+        logger.info(f"Mock audit event: {event_type} for user {user_id}: {details}")
     
     async def _mock_get_trade(self, user_id: str, trade_id: str) -> Optional[Trade]:
         """Mock implementation for get_trade."""
@@ -206,15 +273,21 @@ class DatabaseService:
             
             # Create client and resource
             if self.endpoint_url:
-                # Local development
+                # Local development - use local credentials
                 self._dynamodb_client = boto3.client(
                     'dynamodb',
                     endpoint_url=self.endpoint_url,
+                    aws_access_key_id='local',
+                    aws_secret_access_key='local',
+                    region_name=self.region_name,
                     config=config
                 )
                 self._dynamodb_resource = boto3.resource(
                     'dynamodb',
                     endpoint_url=self.endpoint_url,
+                    aws_access_key_id='local',
+                    aws_secret_access_key='local',
+                    region_name=self.region_name,
                     config=config
                 )
             else:
@@ -389,7 +462,12 @@ class DatabaseService:
             }
             
             # Store audit entry asynchronously to avoid blocking main operations
-            asyncio.create_task(self._store_audit_entry(audit_entry))
+            task = asyncio.create_task(self._store_audit_entry(audit_entry))
+            # Add task to a set to prevent garbage collection
+            if not hasattr(self, '_background_tasks'):
+                self._background_tasks = set()
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
             
         except Exception as e:
             logger.error(f"Failed to log audit event: {str(e)}")
@@ -423,14 +501,10 @@ class DatabaseService:
             # Validate trade data
             trade.validate()
             
-            # Convert trade to DynamoDB item
-            item = trade.to_dict()
+            # Convert trade to DynamoDB item with proper serialization
+            item = serialize_for_dynamodb(trade)
             
-            # Add DynamoDB specific fields
-            item['pk'] = f"USER#{trade.user_id}"
-            item['sk'] = f"TRADE#{trade.trade_id}"
-            item['gsi1pk'] = f"SYMBOL#{trade.symbol}"
-            item['gsi1sk'] = trade.timestamp.isoformat()
+            # Add DynamoDB specific fields (trades table uses user_id and trade_id as keys)
             item['ttl'] = int((datetime.now(timezone.utc) + timedelta(days=2555)).timestamp())  # 7 years retention
             
             # Store in database
@@ -438,7 +512,7 @@ class DatabaseService:
             await self._execute_with_retry(
                 table.put_item,
                 Item=item,
-                ConditionExpression='attribute_not_exists(pk) AND attribute_not_exists(sk)'
+                ConditionExpression='attribute_not_exists(user_id) AND attribute_not_exists(trade_id)'
             )
             
             # Log audit event
@@ -483,18 +557,28 @@ class DatabaseService:
             response = await self._execute_with_retry(
                 table.get_item,
                 Key={
-                    'pk': f"USER#{user_id}",
-                    'sk': f"TRADE#{trade_id}"
+                    'user_id': user_id,
+                    'trade_id': trade_id
                 }
             )
             
             if 'Item' in response:
                 trade_data = response['Item']
                 # Remove DynamoDB specific fields
-                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
-                    trade_data.pop(key, None)
+                trade_data.pop('ttl', None)
                 
-                trade = Trade.from_dict(trade_data)
+                # Deserialize the data
+                deserialized_data = deserialize_from_dynamodb(trade_data)
+                
+                # Filter out fields that aren't part of the Trade model
+                valid_fields = {
+                    'trade_id', 'user_id', 'symbol', 'trade_type', 'quantity', 'price', 
+                    'status', 'timestamp', 'execution_id', 'execution_timestamp', 
+                    'execution_price', 'risk_level', 'notes', 'metadata'
+                }
+                filtered_data = {k: v for k, v in deserialized_data.items() if k in valid_fields}
+                
+                trade = Trade.from_dict(filtered_data)
                 
                 # Cache the result
                 self._set_cache(cache_key, trade_data)
@@ -546,8 +630,8 @@ class DatabaseService:
             
             # Build query parameters
             query_params = {
-                'KeyConditionExpression': 'pk = :pk',
-                'ExpressionAttributeValues': {':pk': f"USER#{user_id}"},
+                'KeyConditionExpression': 'user_id = :user_id',
+                'ExpressionAttributeValues': {':user_id': user_id},
                 'ScanIndexForward': False,  # Most recent first
                 'Limit': limit
             }
@@ -583,11 +667,21 @@ class DatabaseService:
             trades = []
             for item in response.get('Items', []):
                 # Remove DynamoDB specific fields
-                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
-                    item.pop(key, None)
+                item.pop('ttl', None)
+                
+                # Deserialize the data
+                deserialized_data = deserialize_from_dynamodb(item)
+                
+                # Filter out fields that aren't part of the Trade model
+                valid_fields = {
+                    'trade_id', 'user_id', 'symbol', 'trade_type', 'quantity', 'price', 
+                    'status', 'timestamp', 'execution_id', 'execution_timestamp', 
+                    'execution_price', 'risk_level', 'notes', 'metadata'
+                }
+                filtered_data = {k: v for k, v in deserialized_data.items() if k in valid_fields}
                 
                 try:
-                    trade = Trade.from_dict(item)
+                    trade = Trade.from_dict(filtered_data)
                     trades.append(trade)
                 except Exception as e:
                     logger.warning(f"Failed to parse trade data: {str(e)}")
@@ -639,13 +733,13 @@ class DatabaseService:
             await self._execute_with_retry(
                 table.update_item,
                 Key={
-                    'pk': f"USER#{user_id}",
-                    'sk': f"TRADE#{trade_id}"
+                    'user_id': user_id,
+                    'trade_id': trade_id
                 },
                 UpdateExpression=update_expression,
                 ExpressionAttributeValues=expression_values,
                 ExpressionAttributeNames=expression_names,
-                ConditionExpression='attribute_exists(pk) AND attribute_exists(sk)'
+                ConditionExpression='attribute_exists(user_id) AND attribute_exists(trade_id)'
             )
             
             # Clear related cache entries
@@ -840,33 +934,16 @@ class DatabaseService:
             # Validate user data
             user.validate()
             
-            # Mock mode: store in memory
-            if self.mock_mode:
-                if 'users' not in self.mock_data:
-                    self.mock_data['users'] = {}
-                
-                # Check if user already exists
-                if user.user_id in self.mock_data['users']:
-                    raise ConflictError(f"User {user.user_id} already exists", "DUPLICATE_USER")
-                
-                # Store user
-                self.mock_data['users'][user.user_id] = user
-                logger.info(f"User {user.user_id} created successfully in mock mode")
-                return True
-            
-            # Convert user to DynamoDB item
-            item = user.to_dict()
-            item['pk'] = f"USER#{user.user_id}"
-            item['sk'] = "PROFILE"
-            item['gsi1pk'] = f"SLACK#{user.slack_user_id}"
-            item['gsi1sk'] = "USER"
+            # Convert user to DynamoDB item with proper serialization
+            item = serialize_for_dynamodb(user)
+            # The table uses user_id as primary key, not pk/sk
             item['ttl'] = int((datetime.now(timezone.utc) + timedelta(days=3650)).timestamp())  # 10 years
             
             table = self._get_table(self.users_table_name)
             await self._execute_with_retry(
                 table.put_item,
                 Item=item,
-                ConditionExpression='attribute_not_exists(pk) AND attribute_not_exists(sk)'
+                ConditionExpression='attribute_not_exists(user_id)'
             )
             
             # Log audit event
@@ -908,18 +985,19 @@ class DatabaseService:
             response = await self._execute_with_retry(
                 table.get_item,
                 Key={
-                    'pk': f"USER#{user_id}",
-                    'sk': "PROFILE"
+                    'user_id': user_id
                 }
             )
             
             if 'Item' in response:
                 user_data = response['Item']
                 # Remove DynamoDB specific fields
-                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
-                    user_data.pop(key, None)
+                user_data.pop('ttl', None)
                 
-                user = User.from_dict(user_data)
+                # Deserialize the data
+                deserialized_data = deserialize_from_dynamodb(user_data)
+                
+                user = User.from_dict(deserialized_data)
                 
                 # Cache the result
                 self._set_cache(cache_key, user_data)
@@ -945,57 +1023,164 @@ class DatabaseService:
             User object or None if not found
         """
         try:
-            # Mock mode: search in memory
-            if self.mock_mode:
-                if 'users' not in self.mock_data:
-                    self.mock_data['users'] = {}
-                
-                # Search for user by slack_id
-                for user_id, user in self.mock_data['users'].items():
-                    if hasattr(user, 'slack_user_id') and user.slack_user_id == slack_user_id:
-                        logger.info(f"Found user in mock data: {slack_user_id}")
-                        return user
-                
-                logger.info(f"User not found in mock data: {slack_user_id}")
-                return None
-            
             # Check cache
             cache_key = self._generate_cache_key('get_user_by_slack_id', slack_user_id=slack_user_id)
             cached_result = self._get_from_cache(cache_key)
             if cached_result is not None:
-                return User.from_dict(cached_result) if cached_result else None
+                if cached_result == False:  # Cached negative result
+                    return None
+                # Ensure cached result is a dict, not a User object
+                if isinstance(cached_result, dict):
+                    try:
+                        return User.from_dict(cached_result)
+                    except Exception as e:
+                        logger.warning(f"Invalid cached data for user {slack_user_id}, clearing cache: {e}")
+                        # Clear invalid cache entry
+                        self._query_cache.pop(cache_key, None)
+                else:
+                    # Clear invalid cache entry if it's not a dict
+                    self._query_cache.pop(cache_key, None)
             
             table = self._get_table(self.users_table_name)
             response = await self._execute_with_retry(
                 table.query,
                 IndexName='gsi1',
-                KeyConditionExpression='gsi1pk = :gsi1pk AND gsi1sk = :gsi1sk',
+                KeyConditionExpression='slack_user_id = :slack_user_id',
                 ExpressionAttributeValues={
-                    ':gsi1pk': f"SLACK#{slack_user_id}",
-                    ':gsi1sk': "USER"
+                    ':slack_user_id': slack_user_id
                 }
             )
             
             if response.get('Items'):
                 user_data = response['Items'][0]
                 # Remove DynamoDB specific fields
-                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
-                    user_data.pop(key, None)
+                user_data.pop('ttl', None)
                 
-                user = User.from_dict(user_data)
+                # Deserialize the data
+                deserialized_data = deserialize_from_dynamodb(user_data)
                 
-                # Cache the result
-                self._set_cache(cache_key, user_data)
+                # Filter out fields that aren't part of the User model
+                valid_fields = {
+                    'user_id', 'slack_user_id', 'role', 'status', 'profile', 
+                    'permissions', 'portfolio_manager_id', 'additional_roles',
+                    'channel_restrictions', 'session_data', 'security_settings',
+                    'audit_trail', 'metadata'
+                }
+                filtered_data = {k: v for k, v in deserialized_data.items() if k in valid_fields}
+                
+                user = User.from_dict(filtered_data)
+                
+                # Cache the filtered data (not the raw user_data)
+                self._set_cache(cache_key, filtered_data)
                 
                 return user
             
             # Cache negative result
-            self._set_cache(cache_key, None)
+            self._set_cache(cache_key, False)
             return None
             
         except Exception as e:
             logger.error(f"Failed to get user by Slack ID {slack_user_id}: {str(e)}")
             raise DatabaseError(f"Failed to retrieve user by Slack ID: {str(e)}", "USER_GET_BY_SLACK_FAILED", e)
+    
+    async def update_user(self, user: User) -> bool:
+        """
+        Update an existing user in the database.
+        
+        Args:
+            user: User object with updated information
+            
+        Returns:
+            True if update was successful
+            
+        Raises:
+            DatabaseError: If update fails
+        """
+        try:
+            # Convert user to DynamoDB format with proper serialization
+            user_data = serialize_for_dynamodb(user)
+            
+            # Add GSI keys for Slack ID lookup
+            user_data['gsi1pk'] = f"SLACK#{user.slack_user_id}"
+            user_data['gsi1sk'] = "USER"
+            
+            table = self._get_table(self.users_table_name)
+            await self._execute_with_retry(
+                table.put_item,
+                Item=user_data
+            )
+            
+            # Update cache
+            cache_key = self._generate_cache_key('get_user', user_id=user.user_id)
+            self._set_cache(cache_key, user)
+            
+            # Update Slack ID cache
+            slack_cache_key = self._generate_cache_key('get_user_by_slack_id', slack_user_id=user.slack_user_id)
+            self._set_cache(slack_cache_key, user)
+            
+            logger.info(f"User {user.user_id} updated successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to update user {user.user_id}: {str(e)}")
+            raise DatabaseError(f"Failed to update user: {str(e)}", "USER_UPDATE_FAILED", e)
+    
+    async def get_users_by_role(self, role) -> List:
+        """
+        Get all users with a specific role.
+        
+        Args:
+            role: UserRole enum or string
+            
+        Returns:
+            List of User objects with the specified role
+            
+        Raises:
+            DatabaseError: If query fails
+        """
+        try:
+            from models.user import UserRole, User
+            
+            # Convert role to string if it's an enum
+            if isinstance(role, UserRole):
+                role_str = role.value
+            else:
+                role_str = str(role)
+            
+            # Check cache first
+            cache_key = self._generate_cache_key('get_users_by_role', role=role_str)
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                return cached_result
+            
+            table = self._get_table(self.users_table_name)
+            
+            # Scan table for users with the specified role
+            # Note: This is not the most efficient for large datasets, 
+            # but works for development. In production, consider adding a GSI for roles.
+            response = await self._execute_with_retry(
+                table.scan,
+                FilterExpression='#role = :role',
+                ExpressionAttributeNames={'#role': 'role'},
+                ExpressionAttributeValues={':role': role_str}
+            )
+            
+            users = []
+            for item in response.get('Items', []):
+                # Remove DynamoDB specific fields
+                clean_item = {k: v for k, v in item.items() if not k.startswith('gsi')}
+                user = User.from_dict(clean_item)
+                users.append(user)
+            
+            # Cache the result
+            self._set_cache(cache_key, users)
+            
+            logger.debug(f"Found {len(users)} users with role {role_str}")
+            return users
+            
+        except Exception as e:
+            logger.error(f"Failed to get users by role {role}: {str(e)}")
+            raise DatabaseError(f"Failed to retrieve users by role: {str(e)}", "USER_GET_BY_ROLE_FAILED", e)
     
     # Channel Management Methods
     
@@ -1132,598 +1317,6 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Batch write trades failed: {str(e)}")
             raise DatabaseError(f"Batch write failed: {str(e)}", "BATCH_WRITE_FAILED", e)
-    
-    
-    # Portfolio Management Methods
-    
-    async def create_portfolio(self, portfolio: Portfolio) -> Portfolio:
-        """
-        Create a new portfolio in the database.
-        
-        Args:
-            portfolio: Portfolio object to create
-            
-        Returns:
-            Created Portfolio object
-            
-        Raises:
-            DatabaseError: If creation fails
-            ValidationError: If portfolio data is invalid
-        """
-        try:
-            # Validate portfolio
-            portfolio.validate()
-            
-            # Mock mode: store in memory
-            if self.mock_mode:
-                if 'portfolios' not in self.mock_data:
-                    self.mock_data['portfolios'] = {}
-                
-                portfolio_key = f"{portfolio.user_id}#{portfolio.portfolio_id}"
-                self.mock_data['portfolios'][portfolio_key] = portfolio
-                
-                logger.info(f"Portfolio {portfolio.portfolio_id} created in mock mode for user {portfolio.user_id}")
-                return portfolio
-            
-            # Real mode: store in DynamoDB
-            await self.ensure_connection()
-            
-            item = {
-                'pk': f"USER#{portfolio.user_id}",
-                'sk': f"PORTFOLIO#{portfolio.portfolio_id}",
-                'entity_type': 'portfolio',
-                'portfolio_id': portfolio.portfolio_id,
-                'user_id': portfolio.user_id,
-                'name': portfolio.name,
-                'status': portfolio.status.value,
-                'cash_balance': str(portfolio.cash_balance),
-                'total_value': str(portfolio.total_value),
-                'total_cost_basis': str(portfolio.total_cost_basis),
-                'total_pnl': str(portfolio.total_pnl),
-                'day_change': str(portfolio.day_change),
-                'day_change_percent': str(portfolio.day_change_percent),
-                'inception_date': portfolio.inception_date.isoformat(),
-                'last_updated': portfolio.last_updated.isoformat(),
-                'benchmark_symbol': portfolio.benchmark_symbol,
-                'settings': json.dumps(portfolio.settings),
-                'metadata': json.dumps(portfolio.metadata),
-                'risk_metrics': json.dumps({k: str(v) for k, v in portfolio.risk_metrics.items()}),
-                'performance_history': json.dumps(portfolio.performance_history),
-                'positions': json.dumps({symbol: pos.to_dict() for symbol, pos in portfolio.positions.items()}),
-                'created_at': portfolio.inception_date.isoformat(),
-                'updated_at': portfolio.last_updated.isoformat(),
-                'ttl': int((datetime.now(timezone.utc) + timedelta(days=2555)).timestamp())
-            }
-            
-            # Add GSI attributes for querying
-            item['gsi1pk'] = f"PORTFOLIO#{portfolio.portfolio_id}"
-            item['gsi1sk'] = portfolio.last_updated.isoformat()
-            
-            self.table.put_item(
-                Item=item,
-                ConditionExpression='attribute_not_exists(pk)'
-            )
-            
-            logger.info(f"Portfolio {portfolio.portfolio_id} created successfully for user {portfolio.user_id}")
-            return portfolio
-            
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
-                raise DatabaseError(
-                    f"Portfolio {portfolio.portfolio_id} already exists",
-                    "PORTFOLIO_EXISTS",
-                    e
-                )
-            logger.error(f"Failed to create portfolio: {str(e)}")
-            raise DatabaseError(f"Portfolio creation failed: {str(e)}", "CREATE_FAILED", e)
-        except PortfolioValidationError as e:
-            raise ValidationError(f"Portfolio validation failed: {e.message}", "VALIDATION_ERROR", e)
-        except Exception as e:
-            logger.error(f"Unexpected error creating portfolio: {str(e)}")
-            raise DatabaseError(f"Portfolio creation failed: {str(e)}", "UNEXPECTED_ERROR", e)
-    
-    async def get_portfolio(self, user_id: str, portfolio_id: str) -> Optional[Portfolio]:
-        """
-        Retrieve a portfolio by user ID and portfolio ID.
-        
-        Args:
-            user_id: User ID
-            portfolio_id: Portfolio ID
-            
-        Returns:
-            Portfolio object or None if not found
-            
-        Raises:
-            DatabaseError: If retrieval fails
-        """
-        try:
-            # Mock mode: retrieve from memory
-            if self.mock_mode:
-                if 'portfolios' not in self.mock_data:
-                    self.mock_data['portfolios'] = {}
-                
-                portfolio_key = f"{user_id}#{portfolio_id}"
-                portfolio = self.mock_data['portfolios'].get(portfolio_key)
-                
-                if portfolio:
-                    logger.info(f"Portfolio {portfolio_id} retrieved from mock mode")
-                else:
-                    logger.info(f"Portfolio {portfolio_id} not found in mock mode")
-                
-                return portfolio
-            
-            # Real mode: retrieve from DynamoDB
-            await self.ensure_connection()
-            
-            response = self.table.get_item(
-                Key={
-                    'pk': f"USER#{user_id}",
-                    'sk': f"PORTFOLIO#{portfolio_id}"
-                }
-            )
-            
-            if 'Item' not in response:
-                logger.info(f"Portfolio {portfolio_id} not found for user {user_id}")
-                return None
-            
-            item = response['Item']
-            
-            # Convert DynamoDB item to Portfolio object
-            portfolio_data = {
-                'user_id': item['user_id'],
-                'portfolio_id': item['portfolio_id'],
-                'name': item['name'],
-                'status': PortfolioStatus(item['status']),
-                'cash_balance': Decimal(item['cash_balance']),
-                'total_value': Decimal(item['total_value']),
-                'total_cost_basis': Decimal(item['total_cost_basis']),
-                'total_pnl': Decimal(item['total_pnl']),
-                'day_change': Decimal(item['day_change']),
-                'day_change_percent': Decimal(item['day_change_percent']),
-                'inception_date': datetime.fromisoformat(item['inception_date']),
-                'last_updated': datetime.fromisoformat(item['last_updated']),
-                'benchmark_symbol': item.get('benchmark_symbol', 'SPY'),
-                'settings': json.loads(item.get('settings', '{}')),
-                'metadata': json.loads(item.get('metadata', '{}')),
-                'risk_metrics': {k: Decimal(v) for k, v in json.loads(item.get('risk_metrics', '{}')).items()},
-                'performance_history': json.loads(item.get('performance_history', '[]')),
-            }
-            
-            # Parse positions
-            positions_data = json.loads(item.get('positions', '{}'))
-            portfolio_data['positions'] = {
-                symbol: Position.from_dict(pos_data)
-                for symbol, pos_data in positions_data.items()
-            }
-            
-            portfolio = Portfolio(**portfolio_data)
-            logger.info(f"Portfolio {portfolio_id} retrieved successfully")
-            return portfolio
-            
-        except ClientError as e:
-            logger.error(f"Failed to retrieve portfolio: {str(e)}")
-            raise DatabaseError(f"Portfolio retrieval failed: {str(e)}", "GET_FAILED", e)
-        except Exception as e:
-            logger.error(f"Unexpected error retrieving portfolio: {str(e)}")
-            raise DatabaseError(f"Portfolio retrieval failed: {str(e)}", "UNEXPECTED_ERROR", e)
-    
-    async def update_portfolio(self, portfolio: Portfolio) -> Portfolio:
-        """
-        Update an existing portfolio in the database.
-        
-        Args:
-            portfolio: Portfolio object with updated data
-            
-        Returns:
-            Updated Portfolio object
-            
-        Raises:
-            DatabaseError: If update fails
-        """
-        try:
-            # Validate portfolio
-            portfolio.validate()
-            portfolio.calculate_portfolio_values()
-            portfolio.last_updated = datetime.now(timezone.utc)
-            
-            # Mock mode: update in memory
-            if self.mock_mode:
-                if 'portfolios' not in self.mock_data:
-                    self.mock_data['portfolios'] = {}
-                
-                portfolio_key = f"{portfolio.user_id}#{portfolio.portfolio_id}"
-                self.mock_data['portfolios'][portfolio_key] = portfolio
-                
-                logger.info(f"Portfolio {portfolio.portfolio_id} updated in mock mode")
-                return portfolio
-            
-            # Real mode: update in DynamoDB
-            await self.ensure_connection()
-            
-            update_expression = """
-                SET #status = :status,
-                    #name = :name,
-                    cash_balance = :cash_balance,
-                    total_value = :total_value,
-                    total_cost_basis = :total_cost_basis,
-                    total_pnl = :total_pnl,
-                    day_change = :day_change,
-                    day_change_percent = :day_change_percent,
-                    last_updated = :last_updated,
-                    updated_at = :updated_at,
-                    benchmark_symbol = :benchmark_symbol,
-                    settings = :settings,
-                    metadata = :metadata,
-                    risk_metrics = :risk_metrics,
-                    performance_history = :performance_history,
-                    positions = :positions,
-                    gsi1sk = :gsi1sk
-            """
-            
-            expression_values = {
-                ':status': portfolio.status.value,
-                ':name': portfolio.name,
-                ':cash_balance': str(portfolio.cash_balance),
-                ':total_value': str(portfolio.total_value),
-                ':total_cost_basis': str(portfolio.total_cost_basis),
-                ':total_pnl': str(portfolio.total_pnl),
-                ':day_change': str(portfolio.day_change),
-                ':day_change_percent': str(portfolio.day_change_percent),
-                ':last_updated': portfolio.last_updated.isoformat(),
-                ':updated_at': portfolio.last_updated.isoformat(),
-                ':benchmark_symbol': portfolio.benchmark_symbol,
-                ':settings': json.dumps(portfolio.settings),
-                ':metadata': json.dumps(portfolio.metadata),
-                ':risk_metrics': json.dumps({k: str(v) for k, v in portfolio.risk_metrics.items()}),
-                ':performance_history': json.dumps(portfolio.performance_history),
-                ':positions': json.dumps({symbol: pos.to_dict() for symbol, pos in portfolio.positions.items()}),
-                ':gsi1sk': portfolio.last_updated.isoformat()
-            }
-            
-            self.table.update_item(
-                Key={
-                    'pk': f"USER#{portfolio.user_id}",
-                    'sk': f"PORTFOLIO#{portfolio.portfolio_id}"
-                },
-                UpdateExpression=update_expression,
-                ExpressionAttributeNames={
-                    '#status': 'status',
-                    '#name': 'name'
-                },
-                ExpressionAttributeValues=expression_values,
-                ConditionExpression='attribute_exists(pk)'
-            )
-            
-            logger.info(f"Portfolio {portfolio.portfolio_id} updated successfully")
-            return portfolio
-            
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
-                raise DatabaseError(
-                    f"Portfolio {portfolio.portfolio_id} does not exist",
-                    "PORTFOLIO_NOT_FOUND",
-                    e
-                )
-            logger.error(f"Failed to update portfolio: {str(e)}")
-            raise DatabaseError(f"Portfolio update failed: {str(e)}", "UPDATE_FAILED", e)
-        except Exception as e:
-            logger.error(f"Unexpected error updating portfolio: {str(e)}")
-            raise DatabaseError(f"Portfolio update failed: {str(e)}", "UNEXPECTED_ERROR", e)
-    
-    async def update_portfolio_position(self, user_id: str, portfolio_id: str, 
-                                       symbol: str, quantity: int, price: Decimal,
-                                       trade_id: str, commission: Decimal = Decimal('0.00')) -> Portfolio:
-        """
-        Update a specific position within a portfolio (convenience method).
-        
-        Args:
-            user_id: User ID
-            portfolio_id: Portfolio ID
-            symbol: Stock symbol
-            quantity: Quantity to add (positive for buy, negative for sell)
-            price: Trade price
-            trade_id: Trade ID for tracking
-            commission: Commission paid
-            
-        Returns:
-            Updated Portfolio object
-            
-        Raises:
-            DatabaseError: If update fails
-        """
-        try:
-            # Get current portfolio
-            portfolio = await self.get_portfolio(user_id, portfolio_id)
-            
-            if portfolio is None:
-                raise DatabaseError(f"Portfolio {portfolio_id} not found", "PORTFOLIO_NOT_FOUND")
-            
-            # Execute trade in portfolio (this updates positions and cash)
-            portfolio.execute_trade(symbol, quantity, price, trade_id, commission)
-            
-            # Save updated portfolio
-            return await self.update_portfolio(portfolio)
-            
-        except PortfolioValidationError as e:
-            raise ValidationError(f"Position update validation failed: {e.message}", "VALIDATION_ERROR", e)
-        except Exception as e:
-            logger.error(f"Failed to update portfolio position: {str(e)}")
-            raise DatabaseError(f"Position update failed: {str(e)}", "UPDATE_FAILED", e)
-    
-    async def get_user_portfolios(self, user_id: str, status: Optional[PortfolioStatus] = None) -> List[Portfolio]:
-        """
-        Get all portfolios for a user.
-        
-        Args:
-            user_id: User ID
-            status: Optional status filter
-            
-        Returns:
-            List of Portfolio objects
-            
-        Raises:
-            DatabaseError: If query fails
-        """
-        try:
-            # Mock mode: retrieve from memory
-            if self.mock_mode:
-                if 'portfolios' not in self.mock_data:
-                    self.mock_data['portfolios'] = {}
-                
-                portfolios = [
-                    portfolio for key, portfolio in self.mock_data['portfolios'].items()
-                    if portfolio.user_id == user_id
-                ]
-                
-                # Apply status filter
-                if status:
-                    portfolios = [p for p in portfolios if p.status == status]
-                
-                logger.info(f"Retrieved {len(portfolios)} portfolios from mock mode for user {user_id}")
-                return portfolios
-            
-            # Real mode: query DynamoDB
-            await self.ensure_connection()
-            
-            query_params = {
-                'KeyConditionExpression': 'pk = :pk AND begins_with(sk, :sk_prefix)',
-                'ExpressionAttributeValues': {
-                    ':pk': f"USER#{user_id}",
-                    ':sk_prefix': 'PORTFOLIO#'
-                }
-            }
-            
-            # Add status filter if provided
-            if status:
-                query_params['FilterExpression'] = '#status = :status'
-                query_params['ExpressionAttributeNames'] = {'#status': 'status'}
-                query_params['ExpressionAttributeValues'][':status'] = status.value
-            
-            response = self.table.query(**query_params)
-            
-            portfolios = []
-            for item in response.get('Items', []):
-                try:
-                    portfolio_data = {
-                        'user_id': item['user_id'],
-                        'portfolio_id': item['portfolio_id'],
-                        'name': item['name'],
-                        'status': PortfolioStatus(item['status']),
-                        'cash_balance': Decimal(item['cash_balance']),
-                        'total_value': Decimal(item['total_value']),
-                        'total_cost_basis': Decimal(item['total_cost_basis']),
-                        'total_pnl': Decimal(item['total_pnl']),
-                        'day_change': Decimal(item['day_change']),
-                        'day_change_percent': Decimal(item['day_change_percent']),
-                        'inception_date': datetime.fromisoformat(item['inception_date']),
-                        'last_updated': datetime.fromisoformat(item['last_updated']),
-                        'benchmark_symbol': item.get('benchmark_symbol', 'SPY'),
-                        'settings': json.loads(item.get('settings', '{}')),
-                        'metadata': json.loads(item.get('metadata', '{}')),
-                        'risk_metrics': {k: Decimal(v) for k, v in json.loads(item.get('risk_metrics', '{}')).items()},
-                        'performance_history': json.loads(item.get('performance_history', '[]')),
-                    }
-                    
-                    # Parse positions
-                    positions_data = json.loads(item.get('positions', '{}'))
-                    portfolio_data['positions'] = {
-                        symbol: Position.from_dict(pos_data)
-                        for symbol, pos_data in positions_data.items()
-                    }
-                    
-                    portfolios.append(Portfolio(**portfolio_data))
-                except Exception as e:
-                    logger.error(f"Failed to parse portfolio: {str(e)}")
-                    continue
-            
-            logger.info(f"Retrieved {len(portfolios)} portfolios for user {user_id}")
-            return portfolios
-            
-        except ClientError as e:
-            logger.error(f"Failed to query user portfolios: {str(e)}")
-            raise DatabaseError(f"Portfolio query failed: {str(e)}", "QUERY_FAILED", e)
-        except Exception as e:
-            logger.error(f"Unexpected error querying portfolios: {str(e)}")
-            raise DatabaseError(f"Portfolio query failed: {str(e)}", "UNEXPECTED_ERROR", e)
-    
-    async def delete_portfolio(self, user_id: str, portfolio_id: str) -> bool:
-        """
-        Delete a portfolio from the database.
-        
-        Args:
-            user_id: User ID
-            portfolio_id: Portfolio ID
-            
-        Returns:
-            True if deleted successfully
-            
-        Raises:
-            DatabaseError: If deletion fails
-        """
-        try:
-            # Mock mode: delete from memory
-            if self.mock_mode:
-                if 'portfolios' not in self.mock_data:
-                    self.mock_data['portfolios'] = {}
-                
-                portfolio_key = f"{user_id}#{portfolio_id}"
-                if portfolio_key in self.mock_data['portfolios']:
-                    del self.mock_data['portfolios'][portfolio_key]
-                    logger.info(f"Portfolio {portfolio_id} deleted from mock mode")
-                    return True
-                else:
-                    logger.warning(f"Portfolio {portfolio_id} not found in mock mode")
-                    return False
-            
-            # Real mode: delete from DynamoDB
-            await self.ensure_connection()
-            
-            self.table.delete_item(
-                Key={
-                    'pk': f"USER#{user_id}",
-                    'sk': f"PORTFOLIO#{portfolio_id}"
-                },
-                ConditionExpression='attribute_exists(pk)'
-            )
-            
-            logger.info(f"Portfolio {portfolio_id} deleted successfully")
-            return True
-            
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
-                logger.warning(f"Portfolio {portfolio_id} not found for deletion")
-                return False
-            logger.error(f"Failed to delete portfolio: {str(e)}")
-            raise DatabaseError(f"Portfolio deletion failed: {str(e)}", "DELETE_FAILED", e)
-        except Exception as e:
-            logger.error(f"Unexpected error deleting portfolio: {str(e)}")
-            raise DatabaseError(f"Portfolio deletion failed: {str(e)}", "UNEXPECTED_ERROR", e)
-    
-    async def get_all_portfolios(self, status: Optional[PortfolioStatus] = None, limit: int = 100) -> List[Portfolio]:
-        """
-        Get all portfolios across all users (for Portfolio Manager view).
-        
-        Args:
-            status: Optional status filter
-            limit: Maximum number of portfolios to return
-            
-        Returns:
-            List of Portfolio objects from all users
-            
-        Raises:
-            DatabaseError: If query fails
-        """
-        try:
-            # Mock mode: retrieve all from memory
-            if self.mock_mode:
-                if 'portfolios' not in self.mock_data:
-                    self.mock_data['portfolios'] = {}
-                
-                portfolios = list(self.mock_data['portfolios'].values())
-                
-                # Apply status filter if provided
-                if status:
-                    portfolios = [p for p in portfolios if p.status == status]
-                
-                # Sort by last updated (most recent first)
-                portfolios.sort(key=lambda p: p.last_updated, reverse=True)
-                
-                return portfolios[:limit]
-            
-            # DynamoDB mode: scan table (Note: In production, use secondary index for efficiency)
-            scan_params = {
-                'TableName': self.portfolios_table,
-                'Limit': limit
-            }
-            
-            # Add status filter if provided
-            if status:
-                scan_params['FilterExpression'] = 'portfolio_status = :status'
-                scan_params['ExpressionAttributeValues'] = {
-                    ':status': {'S': status.value}
-                }
-            
-            response = self.dynamodb.scan(**scan_params)
-            items = response.get('Items', [])
-            
-            portfolios = []
-            for item in items:
-                try:
-                    # Parse portfolio data (simplified for speed)
-                    portfolio_data = {
-                        'portfolio_id': item['portfolio_id']['S'],
-                        'user_id': item['user_id']['S'],
-                        'name': item.get('name', {}).get('S', 'Default Portfolio'),
-                        'status': PortfolioStatus(item['portfolio_status']['S']),
-                        'cash_balance': Decimal(item['cash_balance']['N']),
-                        'total_value': Decimal(item['total_value']['N']),
-                        'total_pnl': Decimal(item['total_pnl']['N']),
-                        'last_updated': datetime.fromisoformat(item['last_updated']['S']),
-                    }
-                    
-                    # Parse positions
-                    positions_data = json.loads(item.get('positions', {}).get('S', '{}'))
-                    portfolio_data['positions'] = {
-                        symbol: Position.from_dict(pos_data)
-                        for symbol, pos_data in positions_data.items()
-                    }
-                    
-                    portfolios.append(Portfolio(**portfolio_data))
-                except Exception as e:
-                    logger.error(f"Failed to parse portfolio: {str(e)}")
-                    continue
-            
-            logger.info(f"Retrieved {len(portfolios)} portfolios (all users)")
-            return portfolios
-            
-        except ClientError as e:
-            logger.error(f"Failed to scan portfolios: {str(e)}")
-            raise DatabaseError(f"Portfolio scan failed: {str(e)}", "SCAN_FAILED", e)
-        except Exception as e:
-            logger.error(f"Unexpected error scanning portfolios: {str(e)}")
-            raise DatabaseError(f"Portfolio scan failed: {str(e)}", "UNEXPECTED_ERROR", e)
-    
-    async def get_or_create_default_portfolio(self, user_id: str) -> Portfolio:
-        """
-        Get user's default portfolio or create one if it doesn't exist.
-        
-        Args:
-            user_id: User ID
-            
-        Returns:
-            Portfolio object (existing or newly created)
-            
-        Raises:
-            DatabaseError: If operation fails
-        """
-        try:
-            # Get all user portfolios
-            portfolios = await self.get_user_portfolios(user_id, status=PortfolioStatus.ACTIVE)
-            
-            # Return first active portfolio if exists
-            if portfolios:
-                logger.info(f"Found existing portfolio for user {user_id}")
-                return portfolios[0]
-            
-            # Create new default portfolio
-            portfolio_id = f"portfolio_{uuid.uuid4().hex[:12]}"
-            portfolio = Portfolio(
-                user_id=user_id,
-                portfolio_id=portfolio_id,
-                name="Default Portfolio",
-                status=PortfolioStatus.ACTIVE,
-                cash_balance=Decimal('100000.00')  # $100k starting balance
-            )
-            
-            created_portfolio = await self.create_portfolio(portfolio)
-            logger.info(f"Created default portfolio {portfolio_id} for user {user_id}")
-            return created_portfolio
-            
-        except Exception as e:
-            logger.error(f"Failed to get or create default portfolio: {str(e)}")
-            raise DatabaseError(f"Portfolio operation failed: {str(e)}", "OPERATION_FAILED", e)
-    
-
     
     # Health and Monitoring Methods
     

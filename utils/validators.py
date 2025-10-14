@@ -845,6 +845,102 @@ def validate_user_id(user_id: str) -> ValidationResult:
     return result
 
 
+def validate_pii_data(data: Dict[str, Any]) -> ValidationResult:
+    """
+    Validate and identify PII data in a dictionary.
+    
+    Args:
+        data: Dictionary containing potential PII data
+        
+    Returns:
+        ValidationResult with PII validation status
+    """
+    result = ValidationResult()
+    pii_fields = identify_pii_fields(data)
+    
+    result.metadata['pii_fields'] = pii_fields
+    result.metadata['contains_pii'] = len(pii_fields) > 0
+    result.cleaned_value = data
+    
+    if pii_fields:
+        result.add_warning(f"PII detected in fields: {', '.join(pii_fields)}")
+    
+    return result
+
+
+def identify_pii_fields(data: Dict[str, Any]) -> List[str]:
+    """
+    Identify fields that contain PII data.
+    
+    Args:
+        data: Dictionary to analyze for PII
+        
+    Returns:
+        List of field names containing PII
+    """
+    pii_patterns = {
+        'email': r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+        'phone': r'[\+]?[1-9]?[0-9]{7,15}',
+        'ssn': r'\d{3}-?\d{2}-?\d{4}',
+        'credit_card': r'\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}',
+        'ip_address': r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+    }
+    
+    pii_field_names = [
+        'email', 'phone', 'phone_number', 'ssn', 'social_security',
+        'credit_card', 'card_number', 'address', 'user_address',
+        'ip_address', 'device_id', 'passport', 'drivers_license'
+    ]
+    
+    pii_fields = []
+    
+    for field_name, field_value in data.items():
+        if not isinstance(field_value, str):
+            continue
+            
+        # Check field name patterns
+        if any(pii_name in field_name.lower() for pii_name in pii_field_names):
+            pii_fields.append(field_name)
+            continue
+            
+        # Check field value patterns
+        for pii_type, pattern in pii_patterns.items():
+            if re.search(pattern, field_value):
+                pii_fields.append(field_name)
+                break
+    
+    return pii_fields
+
+
+def encrypt_sensitive_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Encrypt sensitive fields in a dictionary.
+    
+    Args:
+        data: Dictionary containing sensitive data
+        
+    Returns:
+        Dictionary with sensitive fields encrypted
+    """
+    import base64
+    import hashlib
+    
+    encrypted_data = data.copy()
+    pii_fields = identify_pii_fields(data)
+    
+    for field in pii_fields:
+        if field in encrypted_data and isinstance(encrypted_data[field], str):
+            # Simple encryption simulation (in production, use proper encryption)
+            value = encrypted_data[field]
+            encrypted_value = base64.b64encode(
+                hashlib.sha256(value.encode()).digest()
+            ).decode()[:16] + "..."
+            encrypted_data[field] = encrypted_value
+    
+    return encrypted_data
+    return result
+
+
 def validate_quantity(quantity: Union[int, str, float]) -> ValidationResult:
     """
     Validate trade quantity.
