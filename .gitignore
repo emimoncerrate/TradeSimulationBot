@@ -158,4 +158,4 @@ Thumbs.db
 # Application specific
 *.log
 .pytest_cache/
-node_modules/
+node_modules/docker/dynamodb/shared-local-instance.db
