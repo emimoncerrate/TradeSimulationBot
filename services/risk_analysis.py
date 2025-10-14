@@ -294,10 +294,11 @@ class RiskAnalysisService:
     error handling, and fallback mechanisms for high availability.
     """
     
-    def __init__(self):
+    def __init__(self, market_data_service=None):
         """Initialize risk analysis service with configuration and dependencies."""
         self.config = get_config()
         self.logger = structlog.get_logger(__name__)
+        self.market_data_service = market_data_service
         
         # Initialize AWS Bedrock client
         self.bedrock_client: Optional[boto3.client] = None

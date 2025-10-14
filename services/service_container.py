@@ -74,14 +74,22 @@ class ServiceDefinition:
 @dataclass
 class ServiceInstance:
     """Instance of a service with metadata."""
-    service_type: Type
-    instance: Any
+    definition: ServiceDefinition
+    service_type: Optional[Type] = None
+    instance: Optional[Any] = None
     state: ServiceState = ServiceState.REGISTERED
     created_at: datetime = field(default_factory=datetime.utcnow)
     last_health_check: Optional[datetime] = None
     health_check_failures: int = 0
+    error_count: int = 0
     initialization_time: Optional[float] = None
     startup_time: Optional[float] = None
+    error_message: Optional[str] = None
+    
+    def __post_init__(self):
+        """Set service_type from definition if not provided."""
+        if self.service_type is None:
+            self.service_type = self.definition.service_type
 
 class ServiceContainerError(Exception):
     """Base exception for service container errors."""

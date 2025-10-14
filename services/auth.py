@@ -1,14 +1,18 @@
 """Authentication service for Teams Trading Bot."""
 
+import os
+import hashlib
+import jwt
 import logging
 import backoff
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Set, List, Tuple
 from azure.identity import DefaultAzureCredential
 import msal
+from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-from config.settings import Settings
+from config.settings import Settings, get_config
 from models.user import Permission, User, UserRole
 
 # Forward declaration to avoid circular import

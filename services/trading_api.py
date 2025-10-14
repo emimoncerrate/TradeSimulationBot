@@ -474,10 +474,12 @@ class TradingAPIService:
     audit logging for compliance requirements.
     """
     
-    def __init__(self):
+    def __init__(self, database_service=None, market_data_service=None):
         """Initialize trading API service with configuration and dependencies."""
         self.config = get_config()
         self.logger = structlog.get_logger(__name__)
+        self.database_service = database_service
+        self.market_data_service = market_data_service
         
         # Initialize market simulator
         self.market_simulator = MarketSimulator()

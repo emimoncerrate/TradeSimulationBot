@@ -335,27 +335,36 @@ class MarketDataService:
         )
         self.circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
         
-        # Metrics
-        self.request_counter = Counter(
-            'market_data_requests_total',
-            'Total market data requests',
-            ['endpoint', 'status']
-        )
-        self.request_duration = Histogram(
-            'market_data_request_duration_seconds',
-            'Market data request duration',
-            ['endpoint']
-        )
-        self.cache_hit_counter = Counter(
-            'market_data_cache_hits_total',
-            'Cache hits for market data',
-            ['cache_type']
-        )
-        self.api_error_counter = Counter(
-            'market_data_api_errors_total',
-            'API errors by type',
-            ['error_type']
-        )
+        # Metrics (with safe registration to avoid duplicates)
+        try:
+            self.request_counter = Counter(
+                'market_data_requests_total',
+                'Total market data requests',
+                ['endpoint', 'status']
+            )
+            self.request_duration = Histogram(
+                'market_data_request_duration_seconds',
+                'Market data request duration',
+                ['endpoint']
+            )
+            self.cache_hit_counter = Counter(
+                'market_data_cache_hits_total',
+                'Cache hits for market data',
+                ['cache_type']
+            )
+            self.api_error_counter = Counter(
+                'market_data_api_errors_total',
+                'API errors by type',
+                ['error_type']
+            )
+        except ValueError as e:
+            # Metrics already registered, retrieve existing ones
+            from prometheus_client import REGISTRY
+            self.request_counter = REGISTRY._collector_to_names.get('market_data_requests_total')
+            self.request_duration = REGISTRY._collector_to_names.get('market_data_request_duration_seconds')
+            self.cache_hit_counter = REGISTRY._collector_to_names.get('market_data_cache_hits_total')
+            self.api_error_counter = REGISTRY._collector_to_names.get('market_data_api_errors_total')
+            self.logger.debug("Prometheus metrics already registered, reusing existing collectors")
         
         # Symbol cache for validation
         self.symbol_cache: Dict[str, SymbolInfo] = {}
