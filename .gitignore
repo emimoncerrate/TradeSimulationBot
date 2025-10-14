@@ -159,3 +159,4 @@ Thumbs.db
 *.log
 .pytest_cache/
 node_modules/docker/dynamodb/shared-local-instance.db
+docker/
