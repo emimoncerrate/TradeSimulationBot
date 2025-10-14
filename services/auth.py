@@ -1,42 +1,83 @@
-"""
-Comprehensive user authentication and authorization service for the Slack Trading Bot.
+"""Authentication service for Teams Trading Bot."""
 
-This module provides complete authentication and authorization functionality including
-Slack OAuth integration, role-based access control, user session management,
-permission validation, security logging, channel authorization, user role determination,
-Portfolio Manager assignment, rate limiting, and suspicious activity detection.
-"""
-
-import asyncio
-import hashlib
-import hmac
-import json
 import logging
-import time
-import uuid
-from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, Optional, List, Set, Tuple, Union
-from dataclasses import dataclass, field
-from enum import Enum
-import jwt
-import boto3
-from botocore.exceptions import ClientError
-import backoff
-
-# Python 3.8 compatibility
-from utils.async_compat import to_thread
-
-# Import Slack SDK components
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
-
-# Import our models and services
-from models.user import User, UserRole, UserStatus, Permission, UserProfile, UserValidationError
-from services.database import DatabaseService, DatabaseError, NotFoundError, ConflictError
-from config.settings import get_config
+from typing import Optional, Dict, Any
+from azure.identity import DefaultAzureCredential
+import msal
+from config.settings import Settings
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+class AuthService:
+    """Handles user authentication and authorization."""
+    
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.credential = DefaultAzureCredential()
+        self._app = msal.ConfidentialClientApplication(
+            client_id=settings.app_id,
+            client_credential=settings.app_password,
+            authority=f"https://login.microsoftonline.com/{settings.tenant_id}"
+        )
+        
+    async def validate_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Validate a user's access to the bot."""
+        try:
+            # Get user from Azure AD
+            result = await self._get_user_info(user_id)
+            if not result:
+                logger.warning(f"User {user_id} not found in Azure AD")
+                return None
+                
+            # Check user's roles
+            if not self._has_valid_role(result):
+                logger.warning(f"User {user_id} does not have required roles")
+                return None
+                
+            return {
+                "id": user_id,
+                "name": result.get("displayName", ""),
+                "email": result.get("mail", ""),
+                "roles": result.get("roles", []),
+                "department": result.get("department", "")
+            }
+            
+        except Exception as e:
+            logger.error(f"Error validating user {user_id}: {str(e)}")
+            return None
+            
+    async def _get_user_info(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get user information from Azure AD."""
+        try:
+            # Get access token for Microsoft Graph
+            result = self._app.acquire_token_silent(["https://graph.microsoft.com/.default"], None)
+            if not result:
+                result = self._app.acquire_token_for_client(["https://graph.microsoft.com/.default"])
+                
+            if not result:
+                logger.error("Failed to acquire token for Microsoft Graph")
+                return None
+                
+            # Call Microsoft Graph to get user info
+            # This would normally use the Microsoft Graph SDK
+            # For now, return mock data
+            return {
+                "displayName": "Test User",
+                "mail": "test@example.com",
+                "roles": ["Trader"],
+                "department": "Trading"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting user info: {str(e)}")
+            return None
+            
+    def _has_valid_role(self, user_info: Dict[str, Any]) -> bool:
+        """Check if user has valid trading roles."""
+        valid_roles = ["Trader", "Portfolio Manager", "Research Analyst"]
+        user_roles = user_info.get("roles", [])
+        return any(role in valid_roles for role in user_roles)
 
 
 class AuthenticationError(Exception):

@@ -89,6 +89,7 @@ gunicorn==21.2.0
 gevent==23.9.1
 
 # AWS Lambda Runtime
-awslambdaric==2.0.8# Alp
-aca Paper Trading API
+awslambdaric==2.0.8
+
+# Alpaca Trading API
 alpaca-trade-api==3.2.0

@@ -1,53 +1,162 @@
-"""
-Jain Global Slack Trading Bot - Main Application Entry Point
+"""Microsoft Teams Trading Bot - Main Application Entry Point"""
 
-This module serves as the main entry point for the Slack Trading Bot application.
-It initializes the Slack Bolt app, configures middleware, registers event handlers,
-and provides both Lambda and local development server capabilities with comprehensive
-monitoring, error handling, and performance metrics collection.
-"""
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime, timezone
 
-import os
-import sys
-import signal
-import logging
-import asyncio
-import threading
-import time
-from typing import Optional, Dict, Any, Callable
-import json
-from datetime import datetime, timedelta, timezone
-from contextlib import asynccontextmanager
+# Create FastAPI app
+app = FastAPI(
+    title="Trading Bot API",
+    description="API for Microsoft Teams Trading Bot with market data integration",
+    version="1.0.0",
+)
+
+# Models
+class TradeRequest(BaseModel):
+    symbol: str
+    quantity: int
+    order_type: str = "market"
+    limit_price: Optional[float] = None
+
+# Routes
+@app.get("/")
+async def root():
+    """Get API status and information."""
+    return {
+        "name": "Trading Bot API",
+        "version": "1.0.0",
+        "status": "running",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
 load_dotenv()
 import traceback
-from functools import wraps
 from collections import defaultdict, deque
 
-# Slack Bolt Framework
-from slack_bolt import App
-from slack_bolt.adapter.aws_lambda import SlackRequestHandler
-from slack_bolt.adapter.socket_mode import SocketModeHandler
-
-# FastAPI for local development server
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse, PlainTextResponse
+# FastAPI
+from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-import uvicorn
+
+# Bot Framework
+import azure.functions as func
+from aiohttp import web
+from botbuilder.core import (
+    BotFrameworkAdapter,
+    BotFrameworkAdapterSettings,
+    ConversationState,
+    MemoryStorage,
+    TurnContext,
+    UserState,
+)
+from botbuilder.schema import Activity, ActivityTypes
+
+# Create FastAPI app with OpenAPI documentation
+app = FastAPI(
+    title="Trading Bot API",
+    description="""
+    API for Microsoft Teams Trading Bot with market data integration.
+    Features include:
+    * Trade execution
+    * Market data
+    * Risk analysis
+    * Portfolio management
+    """,
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Models for API
+from pydantic import BaseModel
+
+class TradeRequest(BaseModel):
+    symbol: str
+    quantity: int
+    order_type: str = "market"
+    limit_price: Optional[float] = None
+
+class MarketDataRequest(BaseModel):
+    symbol: str
+
+# API endpoints
+@app.get("/")
+async def root():
+    """Get API status and information."""
+    return {
+        "name": "Trading Bot API",
+        "version": "1.0.0",
+        "status": "running",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+@app.get("/api/market-data/{symbol}")
+async def get_market_data(symbol: str):
+    """Get real-time market data for a symbol."""
+    try:
+        quote = await SERVICES.market_service.get_quote(symbol)
+        return {
+            "symbol": symbol,
+            "price": quote["price"],
+            "change": quote["change"],
+            "volume": quote["volume"],
+            "timestamp": quote["timestamp"]
+        }
+    except Exception as e:
+        logger.error(f"Error getting market data for {symbol}: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/trade")
+async def create_trade(trade: TradeRequest):
+    """Create a new trade order."""
+    try:
+        order = await SERVICES.trading_service.create_order(
+            symbol=trade.symbol,
+            quantity=trade.quantity,
+            order_type=trade.order_type,
+            limit_price=trade.limit_price
+        )
+        return {
+            "order_id": order["id"],
+            "status": order["status"],
+            "message": "Trade order created successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error creating trade: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/portfolio")
+async def get_portfolio():
+    """Get current portfolio holdings and performance."""
+    try:
+        portfolio = await SERVICES.trading_service.get_portfolio()
+        return {
+            "holdings": portfolio["holdings"],
+            "total_value": portfolio["total_value"],
+            "cash_balance": portfolio["cash_balance"],
+            "daily_pnl": portfolio["daily_pnl"]
+        }
+    except Exception as e:
+        logger.error(f"Error getting portfolio: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 # Application modules
-from config.settings import get_config, validate_environment
-from services.service_container import get_container, ServiceContainer
-from services.database import DatabaseService
-from services.alert_monitor import get_alert_monitor
-from ui.notifications import NotificationService
-from listeners.risk_alert_handlers import register_risk_alert_handlers
-from listeners.commands import register_command_handlers
-from listeners.actions import register_action_handlers
-from listeners.events import register_event_handlers
+from config.settings import Settings
+from bot.teams_bot import TeamsTradeBot
+from bot.middleware.auth_middleware import AuthenticationMiddleware
+from bot.middleware.telemetry_middleware import TelemetryMiddleware
+from services.service_container import ServiceContainer
 
 # Configure logging
 logging.basicConfig(
@@ -56,32 +165,48 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global configuration and service container
-config = get_config()
-service_container = get_container()
+# Load settings
+settings = Settings()
 
-# Initialize alert monitor
-notification_service = NotificationService()
-alert_monitor = get_alert_monitor(
-    db_service=service_container.get(DatabaseService),
-    notification_service=notification_service,
-    market_data_service=None  # Will be initialized async
-)
+# Create adapter
+SETTINGS = BotFrameworkAdapterSettings(settings.app_id, settings.app_password)
+ADAPTER = BotFrameworkAdapter(SETTINGS)
 
-# Application state and metrics
-class ApplicationMetrics:
-    """Comprehensive application metrics collection and monitoring."""
-    
-    def __init__(self):
-        self.start_time = datetime.now(timezone.utc)
-        self.request_count = 0
-        self.error_count = 0
-        self.response_times = deque(maxlen=1000)  # Keep last 1000 response times
-        self.error_types = defaultdict(int)
-        self.endpoint_metrics = defaultdict(lambda: {'count': 0, 'errors': 0, 'avg_time': 0.0})
-        self.circuit_breaker_states = {}
-        self.health_checks = {}
-        self._lock = threading.Lock()
+# Create storage
+MEMORY = MemoryStorage()
+USER_STATE = UserState(MEMORY)
+CONVERSATION_STATE = ConversationState(MEMORY)
+
+# Create service container
+SERVICES = ServiceContainer(settings)
+
+# Create bot
+BOT = TeamsTradeBot(CONVERSATION_STATE, USER_STATE, settings, SERVICES)
+
+# Add middleware
+ADAPTER.use(AuthenticationMiddleware(SERVICES.auth_service))
+ADAPTER.use(TelemetryMiddleware(settings.application_insights_key))
+
+async def init_func(context: func.Context, req: func.HttpRequest) -> func.HttpResponse:
+    """Process a request to the bot framework."""
+    if "application/json" not in req.headers.get("Content-Type", ""):
+        return func.HttpResponse(
+            "Unsupported content type",
+            status_code=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+        )
+
+    body = req.get_json()
+    activity = Activity().deserialize(body)
+    auth_header = req.headers.get("Authorization", "")
+
+    response = await ADAPTER.process_activity(activity, auth_header, BOT.on_turn)
+    if response:
+        return func.HttpResponse(
+            response.body,
+            status_code=response.status,
+            headers=response.headers.items(),
+        )
+    return func.HttpResponse(status_code=HTTPStatus.OK)
     
     def record_request(self, endpoint: str, response_time: float, error: Optional[str] = None):
         """Record request metrics."""
@@ -973,509 +1098,27 @@ async def services_status():
         logger.error(f"Services status endpoint error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@fastapi_app.get("/")
+@app.get("/")
 async def root():
-    """Root endpoint with basic application information."""
+    """Root endpoint that returns basic API information."""
     return {
-        'application': config.app_name,
-        'version': config.app_version,
-        'environment': config.environment.value,
-        'status': 'running',
-        'timestamp': datetime.now(timezone.utc).isoformat(),
-        'services_healthy': len([s for s in service_container.get_service_status()['services'].values() 
-                               if s.get('health_status', False)]) if service_container else 0
+        "name": "Trading Bot API",
+        "version": "1.0.0",
+        "status": "running",
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
-@fastapi_app.post("/slack/events")
-@monitor_performance('slack_events')
-async def slack_events(request: Request, background_tasks: BackgroundTasks):
-    """
-    Handle Slack events via HTTP with comprehensive error handling and monitoring.
-    
-    Args:
-        request: FastAPI request object
-        background_tasks: FastAPI background tasks for async processing
-        
-    Returns:
-        JSONResponse with appropriate status code and content
-    """
-    request_id = f"events_{int(time.time())}"
-    
-    try:
-        logger.info(f"[{request_id}] Slack events request received")
-        
-        # Check if application is ready
-        if lifecycle.is_shutting_down:
-            logger.warning(f"[{request_id}] Request rejected - application shutting down")
-            raise HTTPException(status_code=503, detail="Service unavailable - shutting down")
-        
-        if slack_app is None:
-            logger.error(f"[{request_id}] Slack app not initialized")
-            raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-        
-        # Get request body and headers
-        body = await request.body()
-        headers = dict(request.headers)
-        
-        # Validate request size
-        if len(body) > 1024 * 1024:  # 1MB limit
-            logger.warning(f"[{request_id}] Request body too large: {len(body)} bytes")
-            raise HTTPException(status_code=413, detail="Request entity too large")
-        
-        # Create Lambda-style event
-        lambda_event = {
-            'body': body.decode('utf-8'),
-            'headers': headers,
-            'httpMethod': 'POST',
-            'path': '/slack/events',
-            'queryStringParameters': dict(request.query_params) or None,
-            'isBase64Encoded': False,
-            'requestContext': {
-                'requestId': request_id,
-                'httpMethod': 'POST',
-                'path': '/slack/events'
-            }
-        }
-        
-        # Create mock Lambda context
-        class MockLambdaContext:
-            def __init__(self):
-                self.aws_request_id = request_id
-                self.function_name = 'slack-trading-bot'
-                self.function_version = config.app_version
-                self.invoked_function_arn = f"arn:aws:lambda:us-east-1:123456789012:function:slack-trading-bot"
-                self.memory_limit_in_mb = 512
-                self.remaining_time_in_millis = lambda: 30000  # 30 seconds
-            
-            def get_remaining_time_in_millis(self):
-                return 30000
-        
-        mock_context = MockLambdaContext()
-        
-        # Process with Lambda handler
-        logger.debug(f"[{request_id}] Processing with Lambda handler")
-        response = lambda_handler(lambda_event, mock_context)
-        
-        # Validate response
-        if not isinstance(response, dict):
-            logger.error(f"[{request_id}] Invalid response type from Lambda handler")
-            raise HTTPException(status_code=500, detail="Internal server error")
-        
-        status_code = response.get('statusCode', 200)
-        response_body = response.get('body', '{}')
-        response_headers = response.get('headers', {})
-        
-        # Parse response body
-        try:
-            content = json.loads(response_body) if isinstance(response_body, str) else response_body
-        except json.JSONDecodeError:
-            content = {'message': response_body}
-        
-        logger.info(f"[{request_id}] Slack events processed successfully | Status: {status_code}")
-        
-        return JSONResponse(
-            status_code=status_code,
-            content=content,
-            headers=response_headers
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[{request_id}] Slack events error: {e}")
-        logger.error(f"[{request_id}] Stack trace: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+@app.post("/api/messages")
+async def messages(request: Request):
+    """Handle incoming bot messages."""
+    if "application/json" not in request.headers["Content-Type"]:
+        return Response(status_code=HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
 
-@fastapi_app.post("/slack/interactive")
-@monitor_performance('slack_interactive')
-async def slack_interactive(request: Request, background_tasks: BackgroundTasks):
-    """
-    Handle Slack interactive components via HTTP with comprehensive error handling.
-    
-    Args:
-        request: FastAPI request object
-        background_tasks: FastAPI background tasks for async processing
-        
-    Returns:
-        JSONResponse with appropriate status code and content
-    """
-    request_id = f"interactive_{int(time.time())}"
-    
-    try:
-        logger.info(f"[{request_id}] Slack interactive request received")
-        
-        # Check application readiness
-        if lifecycle.is_shutting_down or slack_app is None:
-            raise HTTPException(status_code=503, detail="Service unavailable")
-        
-        # Get request data
-        body = await request.body()
-        headers = dict(request.headers)
-        
-        # Validate request size
-        if len(body) > 1024 * 1024:  # 1MB limit
-            raise HTTPException(status_code=413, detail="Request entity too large")
-        
-        # Create Lambda-style event
-        lambda_event = {
-            'body': body.decode('utf-8'),
-            'headers': headers,
-            'httpMethod': 'POST',
-            'path': '/slack/interactive',
-            'queryStringParameters': dict(request.query_params) or None,
-            'isBase64Encoded': False,
-            'requestContext': {'requestId': request_id}
-        }
-        
-        # Create mock context
-        class MockContext:
-            aws_request_id = request_id
-            get_remaining_time_in_millis = lambda: 30000
-        
-        # Process with Lambda handler
-        response = lambda_handler(lambda_event, MockContext())
-        
-        status_code = response.get('statusCode', 200)
-        response_body = response.get('body', '{}')
-        
-        try:
-            content = json.loads(response_body) if isinstance(response_body, str) else response_body
-        except json.JSONDecodeError:
-            content = {'message': response_body}
-        
-        logger.info(f"[{request_id}] Interactive request processed | Status: {status_code}")
-        
-        return JSONResponse(
-            status_code=status_code,
-            content=content,
-            headers=response.get('headers', {})
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[{request_id}] Slack interactive error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    body = await request.json()
+    activity = Activity().deserialize(body)
+    auth_header = request.headers.get("Authorization", "")
 
-@fastapi_app.post("/slack/commands")
-@monitor_performance('slack_commands')
-async def slack_commands(request: Request, background_tasks: BackgroundTasks):
-    """
-    Handle Slack slash commands via HTTP with comprehensive error handling.
-    
-    Args:
-        request: FastAPI request object
-        background_tasks: FastAPI background tasks for async processing
-        
-    Returns:
-        JSONResponse with appropriate status code and content
-    """
-    request_id = f"commands_{int(time.time())}"
-    
-    try:
-        logger.info(f"[{request_id}] Slack commands request received")
-        
-        # Check application readiness
-        if lifecycle.is_shutting_down or slack_app is None:
-            raise HTTPException(status_code=503, detail="Service unavailable")
-        
-        # Get request data
-        body = await request.body()
-        headers = dict(request.headers)
-        
-        # Validate request size
-        if len(body) > 1024 * 1024:  # 1MB limit
-            raise HTTPException(status_code=413, detail="Request entity too large")
-        
-        # Create Lambda-style event
-        lambda_event = {
-            'body': body.decode('utf-8'),
-            'headers': headers,
-            'httpMethod': 'POST',
-            'path': '/slack/commands',
-            'queryStringParameters': dict(request.query_params) or None,
-            'isBase64Encoded': False,
-            'requestContext': {'requestId': request_id}
-        }
-        
-        # Create mock context
-        class MockContext:
-            aws_request_id = request_id
-            get_remaining_time_in_millis = lambda: 30000
-        
-        # Process with Lambda handler
-        response = lambda_handler(lambda_event, MockContext())
-        
-        status_code = response.get('statusCode', 200)
-        response_body = response.get('body', '{}')
-        
-        try:
-            content = json.loads(response_body) if isinstance(response_body, str) else response_body
-        except json.JSONDecodeError:
-            content = {'message': response_body}
-        
-        logger.info(f"[{request_id}] Commands request processed | Status: {status_code}")
-        
-        return JSONResponse(
-            status_code=status_code,
-            content=content,
-            headers=response.get('headers', {})
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[{request_id}] Slack commands error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@CircuitBreaker(failure_threshold=3, recovery_timeout=60)
-def run_socket_mode():
-    """
-    Run the app in Socket Mode for development with comprehensive error handling.
-    
-    Socket Mode is ideal for development as it doesn't require exposing HTTP endpoints.
-    """
-    try:
-        if not config.slack.app_token:
-            logger.error("SLACK_APP_TOKEN is required for Socket Mode")
-            raise ValueError("Missing SLACK_APP_TOKEN for Socket Mode")
-        
-        if slack_app is None:
-            logger.error("Slack app not initialized")
-            raise RuntimeError("Slack app not initialized")
-        
-        logger.info("Starting Slack app in Socket Mode...")
-        logger.info(f"App token: {config.slack.app_token[:10]}...")
-        
-        # Register cleanup handler
-        def cleanup_socket_mode():
-            logger.info("Cleaning up Socket Mode resources...")
-        
-        lifecycle.register_cleanup_handler(cleanup_socket_mode)
-        
-        # Start background tasks
-        lifecycle.start_background_task(health_check_task, interval=30)
-        lifecycle.start_background_task(cleanup_metrics_task, interval=300)
-        
-        # Create and start Socket Mode handler
-        handler = SocketModeHandler(slack_app, config.slack.app_token)
-        
-        logger.info("Socket Mode handler created successfully")
-        logger.info("Starting Socket Mode connection...")
-        
-        # Start the handler (this blocks)
-        handler.start()
-        
-    except KeyboardInterrupt:
-        logger.info("Socket Mode interrupted by user")
-        lifecycle.initiate_shutdown()
-    except Exception as e:
-        logger.error(f"Socket Mode error: {e}")
-        logger.error(f"Socket Mode stack trace: {traceback.format_exc()}")
-        app_metrics.update_health_check('socket_mode', False, str(e))
-        raise
-
-@CircuitBreaker(failure_threshold=3, recovery_timeout=60)
-def run_http_server(host: str = "0.0.0.0", port: int = 3000):
-    """
-    Run the app as HTTP server for development and production with comprehensive configuration.
-    
-    Args:
-        host: Host address to bind to
-        port: Port number to listen on
-    """
-    try:
-        if slack_app is None:
-            logger.error("Slack app not initialized")
-            raise RuntimeError("Slack app not initialized")
-        
-        logger.info(f"Starting HTTP server on {host}:{port}...")
-        logger.info(f"Environment: {config.environment.value}")
-        logger.info(f"Debug mode: {config.debug_mode}")
-        
-        # Register cleanup handler
-        def cleanup_http_server():
-            logger.info("Cleaning up HTTP server resources...")
-        
-        lifecycle.register_cleanup_handler(cleanup_http_server)
-        
-        # Configure uvicorn settings based on environment
-        uvicorn_config = {
-            "app": fastapi_app,
-            "host": host,
-            "port": port,
-            "log_level": "info" if not config.debug_mode else "debug",
-            "access_log": config.debug_mode,
-            "reload": config.debug_mode and config.environment.value == 'development',
-            "workers": 1,  # Single worker for development
-        }
-        
-        # Production-specific settings
-        if config.environment.value == 'production':
-            uvicorn_config.update({
-                "reload": False,
-                "access_log": True,
-                "log_level": "warning",
-                "workers": 1,  # Lambda runs single worker
-            })
-        
-        logger.info(f"Uvicorn configuration: {json.dumps(uvicorn_config, default=str, indent=2)}")
-        
-        # Start the server
-        uvicorn.run(**uvicorn_config)
-        
-    except KeyboardInterrupt:
-        logger.info("HTTP server interrupted by user")
-        lifecycle.initiate_shutdown()
-    except Exception as e:
-        logger.error(f"HTTP server error: {e}")
-        logger.error(f"HTTP server stack trace: {traceback.format_exc()}")
-        app_metrics.update_health_check('http_server', False, str(e))
-        raise
-
-def main():
-    """
-    Main entry point for local development with comprehensive initialization,
-    error handling, and graceful shutdown capabilities.
-    """
-    try:
-        # Print startup banner
-        print("=" * 80)
-        print(f"🚀 {config.app_name} v{config.app_version}")
-        print(f"Environment: {config.environment.value}")
-        print(f"Debug Mode: {config.debug_mode}")
-        print(f"Log Level: {config.log_level.value}")
-        print("=" * 80)
-        
-        # Validate environment
-        logger.info("Performing environment validation...")
-        if not validate_environment():
-            logger.error("❌ Environment validation failed. Please check your configuration.")
-            logger.error("Required environment variables:")
-            logger.error("- SLACK_BOT_TOKEN")
-            logger.error("- SLACK_SIGNING_SECRET")
-            logger.error("- FINNHUB_API_KEY")
-            logger.error("- AWS credentials (if using AWS services)")
-            sys.exit(1)
-        
-        logger.info("✅ Environment validation passed")
-        
-        # Check Slack app initialization
-        if slack_app is None:
-            logger.error("❌ Slack app initialization failed")
-            sys.exit(1)
-        
-        logger.info("✅ Slack app initialized successfully")
-        
-        # Initialize service container
-        logger.info("🔧 Initializing service container...")
-        try:
-            # Services are already registered in get_container()
-            service_status = service_container.get_service_status()
-            logger.info(f"✅ Service container initialized with {service_status['total_services']} services")
-        except Exception as e:
-            logger.error(f"❌ Service container initialization failed: {e}")
-            sys.exit(1)
-        
-        # Register signal handlers for graceful shutdown
-        signal.signal(signal.SIGTERM, lifecycle.initiate_shutdown)
-        signal.signal(signal.SIGINT, lifecycle.initiate_shutdown)
-        
-        logger.info(f"🎯 Starting {config.app_name} v{config.app_version}")
-        logger.info(f"📊 Environment: {config.environment.value}")
-        logger.info(f"🔧 Debug mode: {config.debug_mode}")
-        logger.info(f"📝 Log level: {config.log_level.value}")
-        
-        # Display configuration summary
-        if config.debug_mode:
-            config_summary = config.to_dict()
-            logger.debug(f"Configuration summary: {json.dumps(config_summary, indent=2)}")
-        
-        # Choose run mode based on configuration
-        if config.slack.app_token and config.environment.value == "development":
-            logger.info("🔌 Using Socket Mode for development")
-            logger.info(f"App token configured: {config.slack.app_token[:10]}...")
-            run_socket_mode()
-        else:
-            logger.info("🌐 Using HTTP server mode")
-            port = int(os.getenv('PORT', 3000))
-            host = os.getenv('HOST', '0.0.0.0')
-            logger.info(f"Server will start on {host}:{port}")
-            run_http_server(host=host, port=port)
-            
-    except KeyboardInterrupt:
-        logger.info("🛑 Application stopped by user (Ctrl+C)")
-        lifecycle.initiate_shutdown()
-    except SystemExit:
-        logger.info("🛑 Application exiting")
-    except Exception as e:
-        logger.error(f"💥 Critical application error: {e}")
-        logger.error(f"Stack trace: {traceback.format_exc()}")
-        
-        # Update metrics
-        app_metrics.record_request('main_application', 0, type(e).__name__)
-        
-        # Attempt graceful shutdown
-        try:
-            lifecycle.initiate_shutdown()
-        except Exception as shutdown_error:
-            logger.error(f"Error during shutdown: {shutdown_error}")
-        
-        sys.exit(1)
-    finally:
-        logger.info("🏁 Application shutdown complete")
-
-# Startup validation function
-def validate_startup_requirements() -> bool:
-    """
-    Validate all startup requirements before initializing the application.
-    
-    Returns:
-        bool: True if all requirements are met
-    """
-    try:
-        # Check Python version
-        if sys.version_info < (3, 8):
-            logger.error("Python 3.8 or higher is required")
-            return False
-        
-        # Check required environment variables
-        required_vars = [
-            'SLACK_BOT_TOKEN',
-            'SLACK_SIGNING_SECRET',
-            'FINNHUB_API_KEY'
-        ]
-        
-        missing_vars = []
-        for var in required_vars:
-            if not os.getenv(var):
-                missing_vars.append(var)
-        
-        if missing_vars:
-            logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
-            return False
-        
-        # Validate configuration
-        if not validate_environment():
-            logger.error("Configuration validation failed")
-            return False
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Startup validation error: {e}")
-        return False
-
-# Application entry point with validation
-if __name__ == "__main__":
-    # Perform startup validation
-    if not validate_startup_requirements():
-        logger.error("❌ Startup validation failed")
-        sys.exit(1)
-    
-    # Start the application
-    main()
-
-# Export for ASGI servers and Lambda
-app = fastapi_app
-application = fastapi_app  # Alternative export name
+    response = await adapter.process_activity(activity, auth_header, bot.on_turn)
+    if response:
+        return Response(json.dumps(response.body), status_code=response.status)
+    return Response(status_code=HTTPStatus.OK)

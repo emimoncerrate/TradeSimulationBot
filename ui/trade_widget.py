@@ -178,15 +178,19 @@ class TradeWidget:
             # Build modal structure
             modal = {
                 "type": "modal",
-                "callback_id": "trade_modal",
+                "callback_id": "stock_trade_modal_interactive",
                 "title": {
                     "type": "plain_text",
-                    "text": modal_config['title']
+                    "text": "Place Trade"
                 },
                 "blocks": self._build_modal_blocks(context),
                 "close": {
                     "type": "plain_text",
                     "text": "Cancel"
+                },
+                "submit": {
+                    "type": "plain_text",
+                    "text": "Execute Trade"
                 },
                 "private_metadata": json.dumps({
                     "user_id": context.user.user_id,
@@ -197,28 +201,20 @@ class TradeWidget:
                 })
             }
             
-            # Add submit button - required when input blocks are present
-            modal["submit"] = {
-                "type": "plain_text",
-                "text": modal_config['submit_text'] if self._should_show_submit_button(context) else "Continue"
-            }
-            
             # Add notification text for accessibility
             if self.accessibility_enabled:
                 modal["notify_on_close"] = True
             
-            self.logger.info(
-                f"Trade modal created | "
-                f"User: {context.user.user_id} | "
-                f"State: {context.state.value} | "
-                f"Theme: {context.theme.value} | "
-                f"Blocks: {len(modal['blocks'])}"
-            )
+            self.logger.info("Trade modal created",
+                           user_id=context.user.user_id,
+                           state=context.state.value,
+                           theme=context.theme.value,
+                           blocks_count=len(modal["blocks"]))
             
             return modal
             
         except Exception as e:
-            self.logger.error(f"Failed to create trade modal: {str(e)}")
+            self.logger.error("Failed to create trade modal", error=str(e))
             return self._create_error_modal(str(e))
     
     def update_modal_with_market_data(
@@ -249,7 +245,7 @@ class TradeWidget:
             return self.create_trade_modal(context)
             
         except Exception as e:
-            self.logger.error(f"Failed to update modal with market data: {str(e)}")
+            self.logger.error("Failed to update modal with market data", error=str(e))
             context.state = WidgetState.ERROR
             context.errors['market_data'] = f"Failed to load market data: {str(e)}"
             return self.create_trade_modal(context)
@@ -288,7 +284,7 @@ class TradeWidget:
             return self.create_trade_modal(context)
             
         except Exception as e:
-            self.logger.error(f"Failed to update modal with risk analysis: {str(e)}")
+            self.logger.error("Failed to update modal with risk analysis", error=str(e))
             context.state = WidgetState.ERROR
             context.errors['risk_analysis'] = f"Risk analysis failed: {str(e)}"
             return self.create_trade_modal(context)
@@ -337,16 +333,14 @@ class TradeWidget:
                 })
             }
             
-            self.logger.info(
-                f"Confirmation modal created | "
-                f"User: {context.user.user_id} | "
-                f"Risk level: {context.risk_analysis.overall_risk_level.value}"
-            )
+            self.logger.info("Confirmation modal created",
+                           user_id=context.user.user_id,
+                           risk_level=context.risk_analysis.overall_risk_level.value)
             
             return modal
             
         except Exception as e:
-            self.logger.error(f"Failed to create confirmation modal: {str(e)}")
+            self.logger.error("Failed to create confirmation modal", error=str(e))
             return self._create_error_modal(str(e))
     
     def _get_modal_config(self, context: WidgetContext) -> Dict[str, str]:
@@ -443,28 +437,29 @@ class TradeWidget:
         """Build trade input form section."""
         blocks = []
         
-        # Symbol input
+        # Symbol input with initial value and dispatch actions
         symbol_block = {
             "type": "input",
-            "block_id": "symbol_input",
+            "block_id": "trade_symbol_block",
             "element": {
                 "type": "plain_text_input",
-                "action_id": "symbol",
+                "action_id": "symbol_input",
                 "placeholder": {
                     "type": "plain_text",
-                    "text": "Enter stock symbol (e.g., AAPL, MSFT)"
+                    "text": "Enter the stock ticker"
                 },
-                "focus_on_load": True
+                "initial_value": context.symbol if context.symbol else "TSLA",
+                "dispatch_action_config": {
+                    "trigger_actions_on": [
+                        "on_enter_pressed"
+                    ]
+                }
             },
             "label": {
                 "type": "plain_text",
-                "text": "Stock Symbol"
+                "text": "Stock Symbol (e.g., AAPL)"
             }
         }
-        
-        # Pre-populate if available
-        if context.symbol:
-            symbol_block["element"]["initial_value"] = context.symbol
         
         # Add error styling if symbol error exists
         if 'symbol' in context.errors:
@@ -472,7 +467,23 @@ class TradeWidget:
         
         blocks.append(symbol_block)
         
-        # Trade type selection
+        # Current stock price display
+        price_display_text = "*Current Stock Price:* *$150.00*"
+        if context.market_quote:
+            price_display_text = f"*Current Stock Price:* *${context.market_quote.current_price:.2f}*"
+        
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": price_display_text
+            },
+            "block_id": "current_price_display"
+        })
+        
+        blocks.append({"type": "divider"})
+        
+        # Trade action selection (Buy/Sell)
         trade_type_options = [
             {
                 "text": {
@@ -492,15 +503,22 @@ class TradeWidget:
         
         trade_type_block = {
             "type": "input",
-            "block_id": "trade_type_input",
+            "block_id": "trade_side_block",
             "element": {
                 "type": "radio_buttons",
-                "action_id": "trade_type",
-                "options": trade_type_options
+                "action_id": "trade_side_radio",
+                "options": trade_type_options,
+                "initial_option": {
+                    "value": "buy",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Buy"
+                    }
+                }
             },
             "label": {
                 "type": "plain_text",
-                "text": "Trade Type"
+                "text": "Trade Action (Buy/Sell)"
             }
         }
         
@@ -513,88 +531,161 @@ class TradeWidget:
         
         blocks.append(trade_type_block)
         
-        # Quantity and price inputs (side by side)
-        quantity_element = {
-            "type": "plain_text_input",
-            "action_id": "quantity",
-            "placeholder": {
+        # Quantity (shares) input with dispatch actions
+        quantity_block = {
+            "type": "input",
+            "block_id": "qty_shares_block",
+            "element": {
+                "type": "number_input",
+                "action_id": "shares_input",
+                "placeholder": {
+                    "type": "plain_text",
+                    "text": "Enter shares, and GMV will update"
+                },
+                "is_decimal_allowed": False,
+                "dispatch_action_config": {
+                    "trigger_actions_on": [
+                        "on_enter_pressed",
+                        "on_character_entered"
+                    ]
+                }
+            },
+            "label": {
                 "type": "plain_text",
-                "text": "Number of shares"
+                "text": "Quantity (shares)"
+            },
+            "hint": {
+                "type": "plain_text",
+                "text": "Changes here trigger an automatic GMV calculation."
             }
         }
         
         if context.quantity:
-            quantity_element["initial_value"] = str(context.quantity)
+            quantity_block["element"]["initial_value"] = str(int(context.quantity))
         
         if 'quantity' in context.errors:
-            quantity_element["placeholder"]["text"] = f"Error: {context.errors['quantity']}"
+            quantity_block["element"]["placeholder"]["text"] = f"Error: {context.errors['quantity']}"
         
-        # Add quantity input
-        blocks.append({
+        blocks.append(quantity_block)
+        
+        # GMV (Gross Market Value) input with dispatch actions
+        gmv_value = ""
+        if context.quantity and context.price:
+            gmv_value = str(float(context.quantity) * float(context.price))
+        
+        gmv_block = {
             "type": "input",
-            "block_id": "quantity_input",
-            "element": quantity_element,
+            "block_id": "gmv_block",
+            "element": {
+                "type": "number_input",
+                "action_id": "gmv_input",
+                "placeholder": {
+                    "type": "plain_text",
+                    "text": "Enter dollar amount, and shares will update"
+                },
+                "is_decimal_allowed": True,
+                "dispatch_action_config": {
+                    "trigger_actions_on": [
+                        "on_enter_pressed",
+                        "on_character_entered"
+                    ]
+                }
+            },
             "label": {
                 "type": "plain_text",
-                "text": "Quantity"
-            }
-        })
-        
-        # Add current price display (not input)
-        if context.market_quote and context.market_quote.current_price:
-            price_text = f"*Current Price:* ${context.market_quote.current_price:.2f}"
-            if context.market_quote.price_change:
-                change_symbol = "📈" if context.market_quote.price_change >= 0 else "📉"
-                price_text += f"\n{change_symbol} Change: ${context.market_quote.price_change:.2f}"
-            if hasattr(context.market_quote, 'percent_change') and context.market_quote.percent_change:
-                price_text += f" ({context.market_quote.percent_change:.2f}%)"
-        else:
-            price_text = "*Current Price:* Loading..."
-        
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": price_text
-            }
-        })
-        
-        # Add action buttons
-        action_elements = []
-        
-        # Market data button
-        market_data_button = {
-            "type": "button",
-            "text": {
-                "type": "plain_text",
-                "text": "📊 Get Market Data"
+                "text": "Gross Market Value (GMV)"
             },
-            "action_id": "get_market_data"
-        }
-        if not context.market_quote:
-            market_data_button["style"] = "primary"
-        action_elements.append(market_data_button)
-        
-        # Risk analysis button (only if market data is available)
-        if context.market_quote:
-            risk_button = {
-                "type": "button",
-                "text": {
-                    "type": "plain_text",
-                    "text": "🔍 Analyze Risk"
-                },
-                "action_id": "analyze_risk"
+            "hint": {
+                "type": "plain_text",
+                "text": "Changes here trigger an automatic Shares calculation."
             }
-            if not context.risk_analysis:
-                risk_button["style"] = "primary"
-            action_elements.append(risk_button)
+        }
         
-        if action_elements:
-            blocks.append({
-                "type": "actions",
-                "block_id": "trade_actions",
-                "elements": action_elements
-            })
+        if gmv_value:
+            gmv_block["element"]["initial_value"] = gmv_value
+        
+        blocks.append(gmv_block)
+        
+        blocks.append({"type": "divider"})
+        
+        # Order type selection
+        order_type_block = {
+            "type": "input",
+            "block_id": "order_type_block",
+            "element": {
+                "type": "static_select",
+                "action_id": "order_type_select",
+                "placeholder": {
+                    "type": "plain_text",
+                    "text": "Select an order type"
+                },
+                "options": [
+                    {
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Market"
+                        },
+                        "value": "market"
+                    },
+                    {
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Limit"
+                        },
+                        "value": "limit"
+                    },
+                    {
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Stop"
+                        },
+                        "value": "stop"
+                    },
+                    {
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Stop Limit"
+                        },
+                        "value": "stop_limit"
+                    }
+                ]
+            },
+            "label": {
+                "type": "plain_text",
+                "text": "Order Type"
+            }
+        }
+        
+        blocks.append(order_type_block)
+        
+        # Limit price input (optional)
+        limit_price_block = {
+            "type": "input",
+            "block_id": "limit_price_block",
+            "optional": True,
+            "element": {
+                "type": "number_input",
+                "action_id": "limit_price_input",
+                "placeholder": {
+                    "type": "plain_text",
+                    "text": "Enter your maximum/minimum price"
+                },
+                "is_decimal_allowed": True
+            },
+            "label": {
+                "type": "plain_text",
+                "text": "Limit Price (Quantity/Price for Limit Orders)"
+            },
+            "hint": {
+                "type": "plain_text",
+                "text": "Only required for Limit or Stop Limit order types."
+            }
+        }
+        
+        if context.price:
+            limit_price_block["element"]["initial_value"] = str(context.price)
+        
+        blocks.append(limit_price_block)
         
         return blocks
     
@@ -1104,16 +1195,14 @@ class TradeWidget:
             
             is_valid = len(errors) == 0
             
-            self.logger.debug(
-                f"Modal input validation completed | "
-                f"Valid: {is_valid} | "
-                f"Errors: {len(errors)}"
-            )
+            self.logger.debug("Modal input validation completed",
+                            is_valid=is_valid,
+                            error_count=len(errors))
             
             return is_valid, errors
             
         except Exception as e:
-            self.logger.error(f"Modal input validation failed: {str(e)}")
+            self.logger.error("Modal input validation failed", error=str(e))
             return False, {'general': f"Validation error: {str(e)}"}
     
     def extract_trade_data(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1135,5 +1224,5 @@ class TradeWidget:
                 'confirmation_text': form_data.get('confirmation_text', '').strip()
             }
         except Exception as e:
-            self.logger.error(f"Failed to extract trade data: {str(e)}")
+            self.logger.error("Failed to extract trade data", error=str(e))
             raise ValueError(f"Invalid trade data: {str(e)}")

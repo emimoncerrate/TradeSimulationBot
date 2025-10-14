@@ -60,7 +60,6 @@ class ActionType(Enum):
     CANCEL_TRADE = "cancel_trade"
     REFRESH_DATA = "refresh_data"
     VIEW_DETAILS = "view_details"
-    START_TRADE = "start_trade"
 
 
 class ActionError(Exception):
@@ -231,8 +230,7 @@ class ActionHandler:
             ActionType.CONFIRM_HIGH_RISK: self._handle_confirm_high_risk,
             ActionType.CANCEL_TRADE: self._handle_cancel_trade,
             ActionType.REFRESH_DATA: self._handle_refresh_data,
-            ActionType.VIEW_DETAILS: self._handle_view_details,
-            ActionType.START_TRADE: self._handle_start_trade
+            ActionType.VIEW_DETAILS: self._handle_view_details
         }
         
         # State management for ongoing operations
@@ -259,7 +257,7 @@ class ActionHandler:
         
         try:
             # Acknowledge action immediately (within 3 seconds)
-            await ack()
+            ack()
             
             # Create action context
             action_context = self._create_action_context(action_type, body, context)
@@ -793,28 +791,6 @@ class ActionHandler:
             logger.error(f"Error handling view details: {str(e)}")
             raise ActionProcessingError(f"Failed to show details: {str(e)}", "VIEW_DETAILS_FAILED")
     
-    async def _handle_start_trade(self, action_context: ActionContext, client: WebClient) -> None:
-        """Handle start trade action."""
-        try:
-            logger.info(
-                "Start trade requested",
-                user_id=action_context.user.user_id,
-                request_id=action_context.request_id
-            )
-            
-            # For now, show a confirmation message
-            # This could be expanded to open a trade execution modal
-            await asyncio.to_thread(
-                client.chat_postEphemeral,
-                channel=action_context.channel_id,
-                user=action_context.slack_user_id,
-                text="🚀 Trade execution initiated! This feature is being developed."
-            )
-            
-        except Exception as e:
-            logger.error(f"Error handling start trade: {str(e)}")
-            raise ActionProcessingError(f"Failed to start trade: {str(e)}", "START_TRADE_FAILED")
-    
     def _extract_form_value(self, action_context: ActionContext, block_id: str, action_id: str) -> Optional[str]:
         """Extract value from form state."""
         if not action_context.state_values:
@@ -1108,350 +1084,197 @@ def register_action_handlers(app: App, service_container: Optional['ServiceConta
             ActionType.CANCEL_TRADE, body, client, ack, context
         )
     
-    @app.action("buy_shares")
-    async def handle_buy_shares(ack, body, client, context):
-        """Handle buy shares button click."""
+    # Interactive input handlers for real-time modal updates
+    @app.action("shares_input")
+    async def handle_shares_input(ack, body, client):
+        """Handle shares input change - auto-calculate GMV."""
         await ack()
-        
-        user_id = body.get('user', {}).get('id', 'unknown')
-        logger.info(f"✅ Buy shares button clicked by user: {user_id}")
-        
         try:
-            # Get trading service and execute trade
-            from services.service_container import get_trading_api_service
-            from models.trade import Trade, TradeType
-            import uuid
-            from datetime import datetime
-            from decimal import Decimal
+            # Extract current values from the modal
+            view = body.get("view", {})
+            state_values = view.get("state", {}).get("values", {})
             
-            trading_service = get_trading_api_service()
+            # Get shares value
+            shares_block = state_values.get("qty_shares_block", {})
+            shares_value = shares_block.get("shares_input", {}).get("value")
             
-            # Create trade object
-            trade = Trade(
-                trade_id=str(uuid.uuid4()),
-                user_id=user_id,
-                symbol='AAPL',
-                trade_type=TradeType.BUY,
-                quantity=10,
-                price=Decimal('256.48'),
-                timestamp=datetime.utcnow()
-            )
+            # Get current price from display or use market quote
+            current_price = None
+            current_price_block = None
             
-            # Execute the trade
-            execution_report = await trading_service.execute_trade(trade)
+            # Try to get price from current_price_display block
+            for block in view.get("blocks", []):
+                if block.get("block_id") == "current_price_display":
+                    text = block.get("text", {}).get("text", "")
+                    # Extract price from "*Current Stock Price:* *$150.00*"
+                    import re
+                    price_match = re.search(r'\$([0-9,.]+)', text)
+                    if price_match:
+                        current_price = float(price_match.group(1).replace(',', ''))
+                    break
             
-            # Determine execution method for display
-            execution_method = "🚀 Alpaca Paper Trading" if trading_service.alpaca_service.is_available() else "📝 Simulation"
-            
-            # Update modal to show trade confirmation
-            view_id = body.get('view', {}).get('id')
-            if view_id:
-                confirmation_view = {
-                    "type": "modal",
-                    "callback_id": "trade_confirmation_modal",
-                    "title": {
-                        "type": "plain_text",
-                        "text": "✅ Trade Executed"
-                    },
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": f"🎉 *Trade Executed Successfully!*\n\n📊 *Stock:* {trade.symbol}\n📈 *Action:* BUY\n💰 *Quantity:* {trade.quantity} shares\n💵 *Avg Price:* ${execution_report.average_fill_price}\n💸 *Total:* ${execution_report.total_value}"
-                            }
-                        },
-                        {
-                            "type": "divider"
-                        },
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": f"✅ *Order Status:* {execution_report.status.value}\n⏰ *Execution Time:* Just now\n🏢 *Method:* {execution_method}\n📋 *Order ID:* {execution_report.order_id[:8]}..."
-                            }
+            # If we have both shares and price, calculate GMV
+            if shares_value and current_price:
+                try:
+                    shares = int(shares_value)
+                    gmv = shares * current_price
+                    
+                    # Update the modal with calculated GMV
+                    updated_blocks = []
+                    for block in view.get("blocks", []):
+                        if block.get("block_id") == "gmv_block":
+                            # Update GMV value
+                            updated_block = block.copy()
+                            updated_block["element"] = updated_block.get("element", {}).copy()
+                            updated_block["element"]["initial_value"] = str(gmv)
+                            updated_blocks.append(updated_block)
+                        else:
+                            updated_blocks.append(block)
+                    
+                    # Update the view
+                    await client.views_update(
+                        view_id=view["id"],
+                        view={
+                            "type": "modal",
+                            "callback_id": view.get("callback_id"),
+                            "title": view.get("title"),
+                            "submit": view.get("submit"),
+                            "close": view.get("close"),
+                            "blocks": updated_blocks,
+                            "private_metadata": view.get("private_metadata")
                         }
-                    ],
-                    "close": {
-                        "type": "plain_text",
-                        "text": "Close"
-                    }
-                }
-                
-                client.views_update(view_id=view_id, view=confirmation_view)
-                logger.info(f"Buy trade executed successfully: {execution_report.execution_id}")
-                
-        except Exception as e:
-            logger.error(f"Error executing buy trade: {str(e)}")
-            # Show error modal
-            view_id = body.get('view', {}).get('id')
-            if view_id:
-                error_view = {
-                    "type": "modal",
-                    "callback_id": "trade_error_modal",
-                    "title": {
-                        "type": "plain_text",
-                        "text": "❌ Trade Failed"
-                    },
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": f"❌ *Trade execution failed*\n\n📊 *Stock:* AAPL\n📈 *Action:* BUY\n💰 *Quantity:* 10 shares\n\n🔍 *Error:* {str(e)}"
-                            }
-                        }
-                    ],
-                    "close": {
-                        "type": "plain_text",
-                        "text": "Close"
-                    }
-                }
-                client.views_update(view_id=view_id, view=error_view)
-
-    @app.action("sell_shares")
-    async def handle_sell_shares(ack, body, client, context):
-        """Handle sell shares button click."""
-        await ack()
-        
-        user_id = body.get('user', {}).get('id', 'unknown')
-        logger.info(f"✅ Sell shares button clicked by user: {user_id}")
-        
-        try:
-            # Get trading service and execute trade
-            from services.service_container import get_trading_api_service
-            from models.trade import Trade, TradeType
-            import uuid
-            from datetime import datetime
-            from decimal import Decimal
-            
-            trading_service = get_trading_api_service()
-            
-            # Create trade object
-            trade = Trade(
-                trade_id=str(uuid.uuid4()),
-                user_id=user_id,
-                symbol='AAPL',
-                trade_type=TradeType.SELL,
-                quantity=10,
-                price=Decimal('256.48'),
-                timestamp=datetime.utcnow()
-            )
-            
-            # Execute the trade
-            execution_report = await trading_service.execute_trade(trade)
-            
-            # Determine execution method for display
-            execution_method = "🚀 Alpaca Paper Trading" if trading_service.alpaca_service.is_available() else "📝 Simulation"
-            
-            # Update modal to show trade confirmation
-            view_id = body.get('view', {}).get('id')
-            if view_id:
-                confirmation_view = {
-                    "type": "modal",
-                    "callback_id": "trade_confirmation_modal",
-                    "title": {
-                        "type": "plain_text",
-                        "text": "✅ Trade Executed"
-                    },
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": f"🎉 *Trade Executed Successfully!*\n\n📊 *Stock:* {trade.symbol}\n📉 *Action:* SELL\n💰 *Quantity:* {trade.quantity} shares\n💵 *Avg Price:* ${execution_report.average_fill_price}\n💸 *Total:* ${execution_report.total_value}"
-                            }
-                        },
-                        {
-                            "type": "divider"
-                        },
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": f"✅ *Order Status:* {execution_report.status.value}\n⏰ *Execution Time:* Just now\n🏢 *Method:* {execution_method}\n📋 *Order ID:* {execution_report.order_id[:8]}..."
-                            }
-                        }
-                    ],
-                    "close": {
-                        "type": "plain_text",
-                        "text": "Close"
-                    }
-                }
-                
-                client.views_update(view_id=view_id, view=confirmation_view)
-                logger.info(f"Sell trade executed successfully: {execution_report.execution_id}")
-                
-        except Exception as e:
-            logger.error(f"Error executing sell trade: {str(e)}")
-            # Show error modal
-            view_id = body.get('view', {}).get('id')
-            if view_id:
-                error_view = {
-                    "type": "modal",
-                    "callback_id": "trade_error_modal",
-                    "title": {
-                        "type": "plain_text",
-                        "text": "❌ Trade Failed"
-                    },
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": f"❌ *Trade execution failed*\n\n📊 *Stock:* AAPL\n📉 *Action:* SELL\n💰 *Quantity:* 10 shares\n\n🔍 *Error:* {str(e)}"
-                            }
-                        }
-                    ],
-                    "close": {
-                        "type": "plain_text",
-                        "text": "Close"
-                    }
-                }
-                client.views_update(view_id=view_id, view=error_view)
-
-    @app.action("back_to_market_data")
-    def handle_back_to_market_data(ack, body, client, context):
-        """Handle back to market data button click."""
-        ack()
-        logger.info("Back to market data button clicked")
-        # This will close the current modal and return to the previous view
-        # The enhanced trade command will handle showing the market data view
-    
-    @app.action("start_trade")
-    def handle_start_trade(ack, body, client, context):
-        """Handle start trade button click."""
-        ack()
-        
-        user_id = body.get('user', {}).get('id', 'unknown')
-        
-        # Try to get channel_id from different sources
-        channel_id = None
-        if 'channel' in body and body['channel']:
-            channel_id = body['channel'].get('id')
-        elif 'view' in body and 'private_metadata' in body['view']:
-            # Try to extract from modal metadata if available
-            metadata = body['view'].get('private_metadata', '')
-            if metadata and 'channel_id:' in metadata:
-                channel_id = metadata.split('channel_id:')[1].split(',')[0]
-        
-        # If still no channel, try to get from container context
-        if not channel_id:
-            # For modal interactions, we'll send a direct message instead
-            logger.info(f"No channel context available, will send DM to user {user_id}")
-        
-        logger.info(f"Start trade button clicked by user: {user_id}")
-        
-        try:
-            logger.info(f"Attempting to update modal for user {user_id}")
-            
-            # Update the existing modal with trade execution interface
-            view_id = body.get('view', {}).get('id')
-            if view_id:
-                updated_view = {
-                    "type": "modal",
-                    "callback_id": "trade_execution_modal",
-                    "title": {
-                        "type": "plain_text",
-                        "text": "🚀 Execute Trade"
-                    },
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": "🚀 *Trade Execution Ready!*\n\n📊 *Stock:* AAPL\n💰 *Current Price:* $256.48\n📈 *Ready to trade*"
-                            }
-                        },
-                        {
-                            "type": "divider"
-                        },
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": "*Choose your action:*"
-                            }
-                        },
-                        {
-                            "type": "actions",
-                            "elements": [
-                                {
-                                    "type": "button",
-                                    "text": {
-                                        "type": "plain_text",
-                                        "text": "📈 Buy 10 Shares"
-                                    },
-                                    "style": "primary",
-                                    "action_id": "buy_shares",
-                                    "value": "buy_10"
-                                },
-                                {
-                                    "type": "button",
-                                    "text": {
-                                        "type": "plain_text",
-                                        "text": "📉 Sell 10 Shares"
-                                    },
-                                    "style": "danger",
-                                    "action_id": "sell_shares",
-                                    "value": "sell_10"
-                                }
-                            ]
-                        },
-                        {
-                            "type": "context",
-                            "elements": [
-                                {
-                                    "type": "mrkdwn",
-                                    "text": "💡 This is a *simulation* - no real money involved!"
-                                }
-                            ]
-                        },
-                        {
-                            "type": "actions",
-                            "elements": [
-                                {
-                                    "type": "button",
-                                    "text": {
-                                        "type": "plain_text",
-                                        "text": "← Back to Market Data"
-                                    },
-                                    "action_id": "back_to_market_data",
-                                    "value": "back"
-                                }
-                            ]
-                        }
-                    ],
-                    "close": {
-                        "type": "plain_text",
-                        "text": "Close"
-                    }
-                }
-                
-                response = client.views_update(
-                    view_id=view_id,
-                    view=updated_view
-                )
-                logger.info(f"Modal updated successfully: {response.get('ok', False)}")
-            else:
-                logger.error("No view_id found - cannot update modal")
-            
-        except Exception as e:
-            logger.error(f"Error sending trade execution message: {str(e)}")
-            # Final fallback: simple text message
-            try:
-                if channel_id:
-                    fallback_response = client.chat_postEphemeral(
-                        channel=channel_id,
-                        user=user_id,
-                        text="🚀 Trade execution initiated! Your trading system is working. (This is a simulation)"
                     )
-                    logger.info(f"Fallback message sent: {fallback_response.get('ok', False)}")
-            except Exception as fallback_error:
-                logger.error(f"Even fallback message failed: {str(fallback_error)}")
+                    logger.info(f"Updated GMV to {gmv} based on {shares} shares at ${current_price}")
+                    
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to calculate GMV: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error handling shares input: {e}")
+    
+    @app.action("gmv_input")
+    async def handle_gmv_input(ack, body, client):
+        """Handle GMV input change - auto-calculate shares."""
+        await ack()
+        try:
+            # Extract current values from the modal
+            view = body.get("view", {})
+            state_values = view.get("state", {}).get("values", {})
+            
+            # Get GMV value
+            gmv_block = state_values.get("gmv_block", {})
+            gmv_value = gmv_block.get("gmv_input", {}).get("value")
+            
+            # Get current price from display
+            current_price = None
+            for block in view.get("blocks", []):
+                if block.get("block_id") == "current_price_display":
+                    text = block.get("text", {}).get("text", "")
+                    import re
+                    price_match = re.search(r'\$([0-9,.]+)', text)
+                    if price_match:
+                        current_price = float(price_match.group(1).replace(',', ''))
+                    break
+            
+            # If we have both GMV and price, calculate shares
+            if gmv_value and current_price and current_price > 0:
+                try:
+                    gmv = float(gmv_value)
+                    shares = int(gmv / current_price)
+                    
+                    # Update the modal with calculated shares
+                    updated_blocks = []
+                    for block in view.get("blocks", []):
+                        if block.get("block_id") == "qty_shares_block":
+                            # Update shares value
+                            updated_block = block.copy()
+                            updated_block["element"] = updated_block.get("element", {}).copy()
+                            updated_block["element"]["initial_value"] = str(shares)
+                            updated_blocks.append(updated_block)
+                        else:
+                            updated_blocks.append(block)
+                    
+                    # Update the view
+                    await client.views_update(
+                        view_id=view["id"],
+                        view={
+                            "type": "modal",
+                            "callback_id": view.get("callback_id"),
+                            "title": view.get("title"),
+                            "submit": view.get("submit"),
+                            "close": view.get("close"),
+                            "blocks": updated_blocks,
+                            "private_metadata": view.get("private_metadata")
+                        }
+                    )
+                    logger.info(f"Updated shares to {shares} based on GMV ${gmv} at ${current_price}")
+                    
+                except (ValueError, TypeError, ZeroDivisionError) as e:
+                    logger.warning(f"Failed to calculate shares: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error handling GMV input: {e}")
+    
+    @app.action("symbol_input")
+    async def handle_symbol_input(ack, body, client):
+        """Handle symbol input change - fetch and display current price."""
+        await ack()
+        try:
+            # Extract symbol from input
+            view = body.get("view", {})
+            state_values = view.get("state", {}).get("values", {})
+            
+            symbol_block = state_values.get("trade_symbol_block", {})
+            symbol = symbol_block.get("symbol_input", {}).get("value", "").strip().upper()
+            
+            if not symbol:
+                return
+            
+            # Fetch market data for symbol
+            try:
+                market_quote = await market_data_service.get_quote(symbol)
+                
+                # Update the price display block
+                updated_blocks = []
+                for block in view.get("blocks", []):
+                    if block.get("block_id") == "current_price_display":
+                        # Update price display
+                        updated_block = {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*Current Stock Price:* *${market_quote.current_price:.2f}*"
+                            },
+                            "block_id": "current_price_display"
+                        }
+                        updated_blocks.append(updated_block)
+                    else:
+                        updated_blocks.append(block)
+                
+                # Update the view
+                await client.views_update(
+                    view_id=view["id"],
+                    view={
+                        "type": "modal",
+                        "callback_id": view.get("callback_id"),
+                        "title": view.get("title"),
+                        "submit": view.get("submit"),
+                        "close": view.get("close"),
+                        "blocks": updated_blocks,
+                        "private_metadata": view.get("private_metadata")
+                    }
+                )
+                logger.info(f"Updated price for {symbol}: ${market_quote.current_price:.2f}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to fetch price for {symbol}: {e}")
+                
+        except Exception as e:
+            logger.error(f"Error handling symbol input: {e}")
     
     # Modal submission handlers
     @app.view("trade_modal")
+    @app.view("stock_trade_modal_interactive")
     async def handle_trade_modal_submission(ack, body, client, context):
         """Handle trade modal form submission."""
         await action_handler.process_action(
