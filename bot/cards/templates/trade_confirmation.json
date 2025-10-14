@@ -1,0 +1,103 @@
+{
+    "type": "AdaptiveCard",
+    "version": "1.4",
+    "body": [
+        {
+            "type": "TextBlock",
+            "text": "Trade Confirmation",
+            "size": "Large",
+            "weight": "Bolder"
+        },
+        {
+            "type": "Container",
+            "style": "emphasis",
+            "items": [
+                {
+                    "type": "FactSet",
+                    "facts": [
+                        {
+                            "title": "Symbol:",
+                            "value": "${symbol}"
+                        },
+                        {
+                            "title": "Order Type:",
+                            "value": "${orderType}"
+                        },
+                        {
+                            "title": "Method:",
+                            "value": "${orderMethod}"
+                        },
+                        {
+                            "title": "Quantity:",
+                            "value": "${quantity}"
+                        },
+                        {
+                            "title": "Price:",
+                            "value": "${price}"
+                        },
+                        {
+                            "title": "Estimated Total:",
+                            "value": "${estimatedTotal}"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "TextBlock",
+            "text": "Risk Analysis",
+            "size": "Medium",
+            "weight": "Bolder",
+            "spacing": "Medium"
+        },
+        {
+            "type": "FactSet",
+            "facts": [
+                {
+                    "title": "Portfolio Impact:",
+                    "value": "${portfolioImpact}"
+                },
+                {
+                    "title": "Risk Level:",
+                    "value": "${riskLevel}"
+                },
+                {
+                    "title": "Position Size:",
+                    "value": "${positionSize}"
+                }
+            ]
+        },
+        {
+            "type": "TextBlock",
+            "text": "${warningMessage}",
+            "color": "attention",
+            "wrap": true,
+            "isVisible": "${hasWarning}"
+        }
+    ],
+    "actions": [
+        {
+            "type": "Action.Submit",
+            "title": "Confirm Trade",
+            "style": "positive",
+            "data": {
+                "action": "confirm_trade"
+            }
+        },
+        {
+            "type": "Action.Submit",
+            "title": "Modify",
+            "data": {
+                "action": "modify_trade"
+            }
+        },
+        {
+            "type": "Action.Submit",
+            "title": "Cancel",
+            "style": "destructive",
+            "data": {
+                "action": "cancel_trade"
+            }
+        }
+    ]
+}

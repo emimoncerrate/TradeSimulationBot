@@ -1,0 +1,116 @@
+{
+    "type": "AdaptiveCard",
+    "version": "1.4",
+    "body": [
+        {
+            "type": "TextBlock",
+            "text": "Trade Entry",
+            "size": "Large",
+            "weight": "Bolder"
+        },
+        {
+            "type": "Input.Text",
+            "id": "symbol",
+            "label": "Symbol",
+            "placeholder": "Enter stock symbol (e.g., AAPL)",
+            "value": "${symbol}",
+            "isRequired": true
+        },
+        {
+            "type": "Input.ChoiceSet",
+            "id": "orderType",
+            "label": "Order Type",
+            "value": "${orderType}",
+            "isRequired": true,
+            "choices": [
+                {
+                    "title": "Buy",
+                    "value": "buy"
+                },
+                {
+                    "title": "Sell",
+                    "value": "sell"
+                }
+            ]
+        },
+        {
+            "type": "Input.ChoiceSet",
+            "id": "orderMethod",
+            "label": "Order Method",
+            "value": "${orderMethod}",
+            "isRequired": true,
+            "choices": [
+                {
+                    "title": "Market",
+                    "value": "market"
+                },
+                {
+                    "title": "Limit",
+                    "value": "limit"
+                },
+                {
+                    "title": "Stop",
+                    "value": "stop"
+                }
+            ]
+        },
+        {
+            "type": "Input.Number",
+            "id": "quantity",
+            "label": "Quantity",
+            "placeholder": "Enter number of shares",
+            "value": "${quantity}",
+            "min": 1,
+            "max": 10000,
+            "isRequired": true
+        },
+        {
+            "type": "Input.Number",
+            "id": "price",
+            "label": "Price",
+            "placeholder": "Enter price (required for limit/stop orders)",
+            "value": "${price}",
+            "isVisible": "${isPriceVisible}"
+        },
+        {
+            "type": "TextBlock",
+            "text": "Market Data",
+            "size": "Medium",
+            "weight": "Bolder",
+            "spacing": "Medium"
+        },
+        {
+            "type": "FactSet",
+            "facts": [
+                {
+                    "title": "Last Price:",
+                    "value": "${lastPrice}"
+                },
+                {
+                    "title": "Change:",
+                    "value": "${priceChange}"
+                },
+                {
+                    "title": "Volume:",
+                    "value": "${volume}"
+                }
+            ]
+        }
+    ],
+    "actions": [
+        {
+            "type": "Action.Submit",
+            "title": "Submit Order",
+            "data": {
+                "action": "submit_trade"
+            }
+        },
+        {
+            "type": "Action.Submit",
+            "title": "Cancel",
+            "data": {
+                "action": "cancel_trade"
+            }
+        }
+    ]
+}

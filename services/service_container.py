@@ -1,8 +1,14 @@
 """Service container module for dependency injection."""
 
+import asyncio
 import logging
 import threading
-from typing import Dict, Any, Optional, Type, Callable, List
+import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Dict, Any, Optional, Type, Callable, List, TypeVar, Generic, TYPE_CHECKING
 from config.settings import Settings, AppConfig, get_config
 from azure.cosmos import CosmosClient
 from azure.identity import DefaultAzureCredential
@@ -10,95 +16,72 @@ from azure.keyvault.secrets import SecretClient
 from openai import AzureOpenAI
 import redis
 
+# Forward declarations to avoid circular imports
+if TYPE_CHECKING:
+    from services.auth import AuthService
+    from services.database import DatabaseService
+    from services.market_data import MarketDataService
+    from services.risk_analysis import RiskAnalysisService
+    from services.trading_api import TradingAPIService
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
-class ServiceContainer:
-    """Container for all service instances."""
-    
-    def __init__(self, settings: Settings):
-        self.settings = settings
-        self._services: Dict[str, Any] = {}
-        self._initialize_services()
-        
-    def _initialize_services(self):
-        """Initialize all required services."""
-        try:
-            # Initialize Azure credentials
-            self._services['azure_credential'] = DefaultAzureCredential()
-            
-            # Initialize Cosmos DB client
-            cosmos_client = CosmosClient(
-                url=self.settings.cosmos_endpoint,
-                credential=self.settings.cosmos_key
-            )
-            self._services['cosmos_client'] = cosmos_client
-            
-            # Initialize database and containers
-            database = cosmos_client.get_database_client(self.settings.cosmos_database)
-            self._services['users_container'] = database.get_container_client(self.settings.cosmos_container_users)
-            self._services['trades_container'] = database.get_container_client(self.settings.cosmos_container_trades)
-            self._services['positions_container'] = database.get_container_client(self.settings.cosmos_container_positions)
-            
-            # Initialize OpenAI client
-            openai_client = AzureOpenAI(
-                api_key=self.settings.openai_key,
-                api_version="2024-02-15-preview",
-                azure_endpoint=self.settings.openai_endpoint
-            )
-            self._services['openai_client'] = openai_client
-            
-            # Initialize Redis client
-            redis_client = redis.Redis(
-                host=self.settings.redis_host,
-                port=self.settings.redis_port,
-                password=self.settings.redis_password,
-                ssl=self.settings.redis_ssl,
-                decode_responses=True
-            )
-            self._services['redis_client'] = redis_client
-            
-            logger.info("All services initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Error initializing services: {str(e)}")
-            raise
-        
-    def get(self, service_type: Type) -> Optional[Any]:
-        """Get a service instance by type."""
-        service_name = service_type.__name__.lower()
-        return self._services.get(service_name)
-        
-    @property
-    def cosmos_client(self) -> CosmosClient:
-        """Get the Cosmos DB client."""
-        return self._services['cosmos_client']
-        
-    @property
-    def openai_client(self) -> AzureOpenAI:
-        """Get the OpenAI client."""
-        return self._services['openai_client']
-        
-    @property
-    def redis_client(self) -> redis.Redis:
-        """Get the Redis client."""
-        return self._services['redis_client']
-        
-    @property
-    def users_container(self):
-        """Get the users container client."""
-        return self._services['users_container']
-        
-    @property
-    def trades_container(self):
-        """Get the trades container client."""
-        return self._services['trades_container']
-        
-    @property
-    def positions_container(self):
-        """Get the positions container client."""
-        return self._services['positions_container']
+# Generic type variable for service types
+T = TypeVar('T')
 
+
+class ServiceScope(Enum):
+    """Service instance scope."""
+    SINGLETON = "singleton"  # Single instance for the lifetime of the container
+    TRANSIENT = "transient"  # New instance every time
+    SCOPED = "scoped"  # Instance per scope (e.g., per request)
+
+
+class ServiceState(Enum):
+    """Service lifecycle state."""
+    REGISTERED = "registered"
+    INITIALIZING = "initializing"
+    INITIALIZED = "initialized"
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
+@dataclass
+class ServiceDefinition:
+    """Definition of a service to be managed by the container."""
+    service_type: Type
+    implementation: Optional[Type] = None
+    scope: ServiceScope = ServiceScope.SINGLETON
+    dependencies: List[Type] = field(default_factory=list)
+    factory: Optional[Callable] = None
+    config_section: Optional[str] = None
+    health_check: Optional[Callable] = None
+    startup_priority: int = 100
+    shutdown_priority: int = 100
+    auto_start: bool = True
+    tags: List[str] = field(default_factory=list)
+    
+    def __post_init__(self):
+        """Set implementation to service_type if not provided."""
+        if self.implementation is None:
+            self.implementation = self.service_type
+
+
+@dataclass
+class ServiceInstance:
+    """Instance of a service with metadata."""
+    service_type: Type
+    instance: Any
+    state: ServiceState = ServiceState.REGISTERED
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    last_health_check: Optional[datetime] = None
+    health_check_failures: int = 0
+    initialization_time: Optional[float] = None
+    startup_time: Optional[float] = None
 
 class ServiceContainerError(Exception):
     """Base exception for service container errors."""
@@ -605,26 +588,31 @@ def _configure_default_services(container: ServiceContainer) -> None:
 
 
 # Convenience functions for common operations
-def get_auth_service() -> AuthService:
+def get_auth_service() -> 'AuthService':
     """Get the authentication service."""
+    from services.auth import AuthService
     return get_container().get(AuthService)
 
 
-def get_database_service() -> DatabaseService:
+def get_database_service() -> 'DatabaseService':
     """Get the database service."""
+    from services.database import DatabaseService
     return get_container().get(DatabaseService)
 
 
-def get_market_data_service() -> MarketDataService:
+def get_market_data_service() -> 'MarketDataService':
     """Get the market data service."""
+    from services.market_data import MarketDataService
     return get_container().get(MarketDataService)
 
 
-def get_risk_analysis_service() -> RiskAnalysisService:
+def get_risk_analysis_service() -> 'RiskAnalysisService':
     """Get the risk analysis service."""
+    from services.risk_analysis import RiskAnalysisService
     return get_container().get(RiskAnalysisService)
 
 
-def get_trading_api_service() -> TradingAPIService:
+def get_trading_api_service() -> 'TradingAPIService':
     """Get the trading API service."""
+    from services.trading_api import TradingAPIService
     return get_container().get(TradingAPIService)

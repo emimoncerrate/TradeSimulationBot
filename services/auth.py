@@ -1,10 +1,21 @@
 """Authentication service for Teams Trading Bot."""
 
 import logging
-from typing import Optional, Dict, Any
+import backoff
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional, Dict, Any, Set, List, Tuple
 from azure.identity import DefaultAzureCredential
 import msal
+from slack_sdk.errors import SlackApiError
 from config.settings import Settings
+from models.user import Permission, User, UserRole
+
+# Forward declaration to avoid circular import
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from services.database import DatabaseService
+    from slack_sdk import WebClient
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -262,7 +273,7 @@ class AuthService:
     - IP whitelisting and geolocation validation
     """
     
-    def __init__(self, database_service: DatabaseService, slack_client: Optional[WebClient] = None):
+    def __init__(self, database_service: 'DatabaseService', slack_client: Optional['WebClient'] = None):
         """
         Initialize the authentication service.
         

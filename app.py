@@ -33,6 +33,7 @@ async def root():
 # Load environment variables from .env file
 from dotenv import load_dotenv
 load_dotenv()
+import logging
 import traceback
 from collections import defaultdict, deque
 
