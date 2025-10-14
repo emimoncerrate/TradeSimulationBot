@@ -479,6 +479,16 @@ class AuthService:
             if user:
                 # Update user profile with latest Slack info if needed
                 await self._update_user_from_slack_info(user, slack_user_info)
+                
+                # Check if specific users need role updates
+                if slack_user_id in ['U08GVND66H4', 'U08GVNAPX3Q'] and user.role != UserRole.EXECUTION_TRADER:
+                    logger.info(f"Updating role for user {slack_user_id} from {user.role.value} to execution_trader")
+                    user.role = UserRole.EXECUTION_TRADER
+                    # Update permissions for the new role
+                    user._assign_role_permissions()
+                    # Save the updated user
+                    await self.db.update_user(user)
+                
                 return user
             
             # Create new user
@@ -572,6 +582,10 @@ class AuthService:
         profile = slack_user_info.get('profile', {})
         title = profile.get('title', '').lower()
         
+        # Specific user overrides for trading access
+        if slack_user_id in ['U08GVND66H4', 'U08GVNAPX3Q']:
+            return UserRole.EXECUTION_TRADER
+        
         # Role determination logic based on title/department
         if any(keyword in title for keyword in ['portfolio manager', 'pm', 'fund manager']):
             return UserRole.PORTFOLIO_MANAGER
@@ -582,8 +596,8 @@ class AuthService:
         elif any(keyword in title for keyword in ['admin', 'administrator', 'system']):
             return UserRole.ADMIN
         
-        # Default to Research Analyst for new users
-        return UserRole.RESEARCH_ANALYST
+        # Default to Execution Trader for new users (allows trading)
+        return UserRole.EXECUTION_TRADER
     
     async def _assign_portfolio_manager(self, user: User) -> Optional[str]:
         """

@@ -86,7 +86,7 @@ class AWSConfig:
             dynamodb.list_tables()
             
             # Test Bedrock access
-            bedrock = boto3.client('bedrock-runtime', region_name=self.region)
+            bedrock = boto3.client('bedrock', region_name=self.region)
             bedrock.list_foundation_models()
             
             return True
@@ -402,13 +402,13 @@ class ConfigurationManager:
         """
         value = os.getenv(key)
         if not value:
-            # In development mode, provide mock values for required keys
+            # In development mode, provide mock values for required keys ONLY if not set
             env_name = os.getenv('ENVIRONMENT', 'development').lower()
             if env_name == 'development':
                 mock_values = {
                     'SLACK_BOT_TOKEN': 'xoxb-mock-development-token',
-                    'SLACK_SIGNING_SECRET': 'mock-development-signing-secret-32chars',
-                    'FINNHUB_API_KEY': 'mock-development-api-key'
+                    'SLACK_SIGNING_SECRET': 'mock-development-signing-secret-32chars'
+                    # Removed FINNHUB_API_KEY from mock values - it should be real
                 }
                 if key in mock_values:
                     return mock_values[key]
