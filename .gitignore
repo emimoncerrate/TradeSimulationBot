@@ -151,3 +151,9 @@ Thumbs.db
 *.log
 .pytest_cache/
 node_modules/
+# Secrets & build
+.env
+*.env
+**/__pycache__/
+*.pyc
+trading_api/.env
