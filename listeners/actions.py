@@ -1301,6 +1301,14 @@ def register_action_handlers(app: App, service_container: Optional['ServiceConta
                 }
                 client.views_update(view_id=view_id, view=error_view)
 
+    @app.action("back_to_market_data")
+    def handle_back_to_market_data(ack, body, client, context):
+        """Handle back to market data button click."""
+        ack()
+        logger.info("Back to market data button clicked")
+        # This will close the current modal and return to the previous view
+        # The enhanced trade command will handle showing the market data view
+    
     @app.action("start_trade")
     def handle_start_trade(ack, body, client, context):
         """Handle start trade button click."""

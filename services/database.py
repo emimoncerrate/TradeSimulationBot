@@ -1027,34 +1027,56 @@ class DatabaseService:
             cache_key = self._generate_cache_key('get_user_by_slack_id', slack_user_id=slack_user_id)
             cached_result = self._get_from_cache(cache_key)
             if cached_result is not None:
-                return User.from_dict(cached_result) if cached_result else None
+                if cached_result == False:  # Cached negative result
+                    return None
+                # Ensure cached result is a dict, not a User object
+                if isinstance(cached_result, dict):
+                    try:
+                        return User.from_dict(cached_result)
+                    except Exception as e:
+                        logger.warning(f"Invalid cached data for user {slack_user_id}, clearing cache: {e}")
+                        # Clear invalid cache entry
+                        self._query_cache.pop(cache_key, None)
+                else:
+                    # Clear invalid cache entry if it's not a dict
+                    self._query_cache.pop(cache_key, None)
             
             table = self._get_table(self.users_table_name)
             response = await self._execute_with_retry(
                 table.query,
                 IndexName='gsi1',
-                KeyConditionExpression='gsi1pk = :gsi1pk AND gsi1sk = :gsi1sk',
+                KeyConditionExpression='slack_user_id = :slack_user_id',
                 ExpressionAttributeValues={
-                    ':gsi1pk': f"SLACK#{slack_user_id}",
-                    ':gsi1sk': "USER"
+                    ':slack_user_id': slack_user_id
                 }
             )
             
             if response.get('Items'):
                 user_data = response['Items'][0]
                 # Remove DynamoDB specific fields
-                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
-                    user_data.pop(key, None)
+                user_data.pop('ttl', None)
                 
-                user = User.from_dict(user_data)
+                # Deserialize the data
+                deserialized_data = deserialize_from_dynamodb(user_data)
                 
-                # Cache the result
-                self._set_cache(cache_key, user_data)
+                # Filter out fields that aren't part of the User model
+                valid_fields = {
+                    'user_id', 'slack_user_id', 'role', 'status', 'profile', 
+                    'permissions', 'portfolio_manager_id', 'additional_roles',
+                    'channel_restrictions', 'session_data', 'security_settings',
+                    'audit_trail', 'metadata'
+                }
+                filtered_data = {k: v for k, v in deserialized_data.items() if k in valid_fields}
+                
+                user = User.from_dict(filtered_data)
+                
+                # Cache the filtered data (not the raw user_data)
+                self._set_cache(cache_key, filtered_data)
                 
                 return user
             
             # Cache negative result
-            self._set_cache(cache_key, None)
+            self._set_cache(cache_key, False)
             return None
             
         except Exception as e:
