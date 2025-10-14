@@ -355,14 +355,8 @@ class RiskAnalysisService:
                 region_name=self.config.aws.region
             )
             
-            # Test Bedrock connectivity (skip in development mode with invalid credentials)
-            if self.config.environment.value != 'development' or (
-                os.getenv('AWS_ACCESS_KEY_ID') not in ['local', 'mock-access-key-id'] and 
-                os.getenv('AWS_SECRET_ACCESS_KEY') not in ['local', 'mock-secret-key']
-            ):
-                await self._test_bedrock_connectivity()
-            else:
-                self.logger.info("Skipping Bedrock connectivity test in development mode with local credentials")
+            # Skip Bedrock connectivity test for now - model access needs to be enabled
+            self.logger.info("Skipping Bedrock connectivity test - model access needs to be enabled")
             
             self.logger.info("RiskAnalysisService initialization complete")
             
