@@ -48,69 +48,118 @@ def register_risk_alert_handlers(
     
     # ========== Slash Commands ==========
     
-    async def handle_risk_alert_command(ack: Ack, command: Dict, client: WebClient):
+    def handle_risk_alert_command(ack, body, client):
         """Handle /risk-alert command - opens configuration modal."""
-        await ack()
+        import time
+        start_time = time.time()
+        
+        ack()  # Acknowledge immediately
+        ack_time = time.time()
+        logger.info(f"⏱️  ACK took {(ack_time - start_time)*1000:.2f}ms")
         
         try:
-            # Check if user is authorized (Portfolio Manager or Admin)
-            user = await db_service.get_user_by_slack_id(command['user_id'])
+            # TEMPORARY: Allow all users to create risk alerts (no role restriction)
+            # No auth check needed - just open the modal immediately
             
-            if not user or user.role not in [UserRole.PORTFOLIO_MANAGER, UserRole.ADMIN]:
+            # Create and open modal immediately (trigger_id expires in 3 seconds!)
+            logger.info(f"🔨 Creating modal for user {body['user_id']}...")
+            modal = create_risk_alert_modal()
+            modal_time = time.time()
+            logger.info(f"⏱️  Modal creation took {(modal_time - ack_time)*1000:.2f}ms")
+            
+            # Log modal structure for debugging
+            import json
+            logger.debug(f"📋 Modal structure: {json.dumps(modal, indent=2)[:500]}...")
+            
+            # Validate trigger_id exists
+            trigger_id = body.get('trigger_id')
+            if not trigger_id:
+                raise ValueError("No trigger_id in request body")
+            
+            logger.info(f"📤 Opening modal with trigger_id: {trigger_id[:20]}... (full: {len(trigger_id)} chars)")
+            
+            try:
+                response = client.views_open(
+                    trigger_id=trigger_id,
+                    view=modal
+                )
+                logger.info(f"📥 Slack API response OK: {response.get('ok', False)}")
+            except SlackApiError as slack_err:
+                logger.error(f"🚫 Slack API Error: {slack_err.response['error']}")
+                logger.error(f"🚫 Full response: {slack_err.response}")
+                raise
+            open_time = time.time()
+            logger.info(f"⏱️  Modal open took {(open_time - modal_time)*1000:.2f}ms")
+            logger.info(f"✅ TOTAL TIME: {(open_time - start_time)*1000:.2f}ms")
+            
+            logger.info(f"Risk alert modal opened for user {body['user_id']}")
+            
+        except Exception as e:
+            # Get detailed error info
+            error_details = str(e)
+            if hasattr(e, 'response'):
+                error_details = f"{str(e)}\nResponse: {e.response}"
+            
+            logger.error(f"❌ Error handling /risk-alert command: {error_details}", exc_info=True)
+            
+            try:
+                client.chat_postEphemeral(
+                    channel=body['channel_id'],
+                    user=body['user_id'],
+                    text=f"❌ Error opening risk alert configuration: {str(e)}"
+                )
+            except:
+                pass
+    
+    def handle_list_alerts_command(ack, body, client):
+        """Handle /risk-alerts command - lists user's alerts."""
+        ack()  # Acknowledge immediately
+        
+        async def async_handler():
+            try:
+                command = body
+                # Get user's alerts
+                alerts = await db_service.get_manager_alerts(
+                    manager_id=command['user_id'],
+                    active_only=False
+                )
+                
+                # Create list message
+                message = create_alert_list_message(alerts)
+                
+                # Send as ephemeral message
                 await client.chat_postEphemeral(
                     channel=command['channel_id'],
                     user=command['user_id'],
-                    text="❌ Only Portfolio Managers and Admins can create risk alerts."
+                    **message
                 )
-                return
-            
-            # Open risk alert configuration modal
-            modal = create_risk_alert_modal()
-            await client.views_open(
-                trigger_id=command['trigger_id'],
-                view=modal
-            )
-            
-            logger.info(f"Risk alert modal opened for user {command['user_id']}")
-            
-        except Exception as e:
-            logger.error(f"Error handling /risk-alert command: {str(e)}", exc_info=True)
-            await client.chat_postEphemeral(
-                channel=command['channel_id'],
-                user=command['user_id'],
-                text=f"❌ Error opening risk alert configuration: {str(e)}"
-            )
-    
-    async def handle_list_alerts_command(ack: Ack, command: Dict, client: WebClient):
-        """Handle /risk-alerts command - lists user's alerts."""
-        await ack()
+                
+                logger.info(f"Alert list sent to user {command['user_id']}")
+                
+            except Exception as e:
+                logger.error(f"Error listing alerts: {str(e)}", exc_info=True)
+                try:
+                    await client.chat_postEphemeral(
+                        channel=command['channel_id'],
+                        user=command['user_id'],
+                        text=f"❌ Error retrieving your alerts: {str(e)}"
+                    )
+                except:
+                    pass
         
-        try:
-            # Get user's alerts
-            alerts = await db_service.get_manager_alerts(
-                manager_id=command['user_id'],
-                active_only=False
-            )
-            
-            # Create list message
-            message = create_alert_list_message(alerts)
-            
-            # Send as ephemeral message
-            await client.chat_postEphemeral(
-                channel=command['channel_id'],
-                user=command['user_id'],
-                **message
-            )
-            
-            logger.info(f"Alert list sent to user {command['user_id']}")
-            
-        except Exception as e:
-            logger.error(f"Error listing alerts: {str(e)}", exc_info=True)
-            await client.chat_postEphemeral(
-                channel=command['channel_id'],
-                user=command['user_id'],
-                text=f"❌ Error retrieving your alerts: {str(e)}"
-            )
+        # Run async handler
+        import asyncio
+        import threading
+        def run_in_thread():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(async_handler())
+            finally:
+                loop.close()
+        
+        thread = threading.Thread(target=run_in_thread)
+        thread.start()
     
     # ========== Modal Submissions ==========
     

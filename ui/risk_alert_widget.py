@@ -173,12 +173,28 @@ def create_risk_alert_modal(existing_alert: Optional[RiskAlertConfig] = None) ->
                         }
                     ],
                     "initial_options": [
-                        {"text": {"type": "plain_text", "text": "Scan existing trades now"}, "value": "scan_existing"},
-                        {"text": {"type": "plain_text", "text": "Monitor new trades"}, "value": "monitor_new"}
+                        {
+                            "text": {"type": "plain_text", "text": "Scan existing trades now"},
+                            "value": "scan_existing",
+                            "description": {"type": "plain_text", "text": "Check current open positions immediately"}
+                        },
+                        {
+                            "text": {"type": "plain_text", "text": "Monitor new trades"},
+                            "value": "monitor_new",
+                            "description": {"type": "plain_text", "text": "Alert on future trades that match criteria"}
+                        }
                     ] if not is_edit else (
-                        [{"text": {"type": "plain_text", "text": "Scan existing trades now"}, "value": "scan_existing"}] if existing_alert.notify_on_existing else []
+                        [{
+                            "text": {"type": "plain_text", "text": "Scan existing trades now"},
+                            "value": "scan_existing",
+                            "description": {"type": "plain_text", "text": "Check current open positions immediately"}
+                        }] if existing_alert.notify_on_existing else []
                     ) + (
-                        [{"text": {"type": "plain_text", "text": "Monitor new trades"}, "value": "monitor_new"}] if existing_alert.notify_on_new else []
+                        [{
+                            "text": {"type": "plain_text", "text": "Monitor new trades"},
+                            "value": "monitor_new",
+                            "description": {"type": "plain_text", "text": "Alert on future trades that match criteria"}
+                        }] if existing_alert.notify_on_new else []
                     )
                 }
             },

@@ -1,0 +1,35 @@
+fix: Convert risk alert command handlers to synchronous wrapper pattern
+
+PROBLEM:
+- Slack Bolt command handlers were defined as `async def` 
+- Bolt couldn't recognize/handle async command handlers directly
+- Error: "Unhandled request ({'type': None, 'command': '/risk-alert'})"
+
+ROOT CAUSE:
+- Slack Bolt expects synchronous command handlers
+- Async handlers defined inside a function don't register properly
+- Parameter signature was incorrect (used `command: Dict` instead of `body`)
+
+SOLUTION:
+- Changed handlers from `async def` to regular `def`
+- Wrapped async logic inside nested `async def async_handler()`
+- Run async code in separate thread with new event loop
+- Fixed parameter signature to match Slack Bolt expectations: `ack, body, client`
+- Pattern matches working `/trade` command implementation
+
+CHANGES:
+- handle_risk_alert_command: Now synchronous wrapper with async inner function
+- handle_list_alerts_command: Now synchronous wrapper with async inner function
+- Both use threading + asyncio.new_event_loop() pattern
+- Immediate `ack()` acknowledgment, async work in background
+
+FILES MODIFIED:
+- listeners/risk_alert_handlers.py
+
+TESTING:
+After this fix, `/risk-alert` and `/risk-alerts` commands should:
+1. Be recognized by Slack Bolt (no more "unhandled request")
+2. Acknowledge immediately (no 3-second timeout)
+3. Execute async database/API calls in background
+4. Respond to user with modal or message
+

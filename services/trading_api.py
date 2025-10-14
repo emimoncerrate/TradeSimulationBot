@@ -482,6 +482,13 @@ class TradingAPIService:
         # Initialize market simulator
         self.market_simulator = MarketSimulator()
         
+        # Alpaca service reference (initialized lazily)
+        self.alpaca_service: Optional[Any] = None
+        
+        # Initialize Alpaca if enabled
+        if self.config.trading.use_real_trading and self.config.alpaca.enabled:
+            asyncio.create_task(self._init_alpaca_service())
+        
         # Execution tracking
         self.active_orders: Dict[str, ExecutionReport] = {}
         self.execution_history: List[ExecutionReport] = []
@@ -520,7 +527,20 @@ class TradingAPIService:
         
         self.logger.info("TradingAPIService initialized",
                         mock_execution=self.config.trading.mock_execution_enabled,
+                        real_trading_enabled=self.config.trading.use_real_trading,
+                        alpaca_enabled=self.config.alpaca.enabled,
                         execution_delay=self.config.trading.execution_delay_seconds)
+    
+    async def _init_alpaca_service(self):
+        """Initialize Alpaca service asynchronously"""
+        try:
+            from services.alpaca_trading import get_alpaca_trading_service
+            self.alpaca_service = await get_alpaca_trading_service()
+            self.logger.info("Alpaca trading service initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize Alpaca service: {e}")
+            # Fall back to mock trading
+            self.config.trading.use_real_trading = False
     
     async def execute_trade(
         self, 
@@ -529,7 +549,51 @@ class TradingAPIService:
         timeout_seconds: int = 30
     ) -> ExecutionReport:
         """
-        Execute a trade with comprehensive simulation and tracking.
+        Execute a trade - routes to real or mock execution based on configuration.
+        
+        Args:
+            trade: Trade object to execute
+            order_type: Type of order (market, limit, etc.)
+            timeout_seconds: Maximum execution time
+            
+        Returns:
+            ExecutionReport: Comprehensive execution results
+            
+        Raises:
+            ValueError: If trade validation fails
+            Exception: If execution fails
+        """
+        # Route to real or mock trading based on configuration
+        if self.config.trading.use_real_trading and self.alpaca_service:
+            self.logger.info(
+                "Routing to REAL trade execution via Alpaca",
+                trade_id=trade.trade_id,
+                symbol=trade.symbol,
+                quantity=trade.quantity
+            )
+            return await self.alpaca_service.execute_trade(trade)
+        else:
+            if self.config.trading.use_real_trading:
+                self.logger.warning(
+                    "Real trading requested but Alpaca service not available, falling back to mock",
+                    trade_id=trade.trade_id
+                )
+            self.logger.info(
+                "Routing to MOCK trade execution (simulation)",
+                trade_id=trade.trade_id,
+                symbol=trade.symbol,
+                quantity=trade.quantity
+            )
+            return await self._execute_mock_trade(trade, order_type, timeout_seconds)
+    
+    async def _execute_mock_trade(
+        self, 
+        trade: Trade, 
+        order_type: OrderType = OrderType.MARKET,
+        timeout_seconds: int = 30
+    ) -> ExecutionReport:
+        """
+        Execute a mock trade with comprehensive simulation and tracking.
         
         Args:
             trade: Trade object to execute

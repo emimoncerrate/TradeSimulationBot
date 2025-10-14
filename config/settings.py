@@ -1,98 +1,59 @@
-"""
-Comprehensive configuration management system for Jain Global Slack Trading Bot.
-
-This module provides centralized configuration management with environment variable handling,
-AWS configuration, Slack app credentials, and comprehensive validation. It supports both
-development and production environments with appropriate defaults and security measures.
-"""
+"""Settings module for the Teams Trading Bot."""
 
 import os
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, Optional, List
+from pydantic import Field
+from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from enum import Enum
-import boto3
-from botocore.exceptions import ClientError, NoCredentialsError
 
-
-class Environment(Enum):
-    """Supported deployment environments."""
+class Environment(str, Enum):
+    """Environment types."""
     DEVELOPMENT = "development"
     STAGING = "staging"
     PRODUCTION = "production"
 
-
-class LogLevel(Enum):
-    """Supported logging levels."""
+class LogLevel(str, Enum):
+    """Logging levels."""
     DEBUG = "DEBUG"
     INFO = "INFO"
     WARNING = "WARNING"
     ERROR = "ERROR"
     CRITICAL = "CRITICAL"
 
+# Load environment variables
+load_dotenv()
 
-@dataclass
-class SlackConfig:
-    """Slack application configuration settings."""
-    bot_token: str
-    signing_secret: str
-    app_token: Optional[str] = None
-    client_id: Optional[str] = None
-    client_secret: Optional[str] = None
-    oauth_redirect_url: Optional[str] = None
+class Settings(BaseSettings):
+    """Configuration settings for the Teams Trading Bot."""
     
-    def __post_init__(self):
-        """Validate Slack configuration after initialization."""
-        if not self.bot_token or not self.bot_token.startswith('xoxb-'):
-            raise ValueError("Invalid Slack bot token format. Must start with 'xoxb-'")
-        
-        if not self.signing_secret:
-            raise ValueError("Slack signing secret is required")
-        
-        if len(self.signing_secret) < 32:
-            raise ValueError("Slack signing secret appears to be invalid (too short)")
-
-
-@dataclass
-class AWSConfig:
-    """AWS service configuration settings."""
-    region: str = "us-east-1"
-    dynamodb_table_prefix: str = "jain-trading-bot"
-    bedrock_model_id: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    lambda_function_name: Optional[str] = None
-    api_gateway_stage: str = "prod"
+    # Bot Framework Configuration
+    APP_ID: str = Field(env="MicrosoftAppId", description="Microsoft Teams App ID")
+    APP_PASSWORD: str = Field(env="MicrosoftAppPassword", description="Microsoft Teams App Password")
     
-    # DynamoDB table names
-    trades_table: str = field(init=False)
-    positions_table: str = field(init=False)
-    channels_table: str = field(init=False)
+    # Azure Configuration
+    AZURE_STORAGE_CONNECTION_STRING: Optional[str] = Field(None, description="Azure Storage Connection String")
+    COSMOS_DB_ENDPOINT: Optional[str] = Field(None, description="Azure Cosmos DB Endpoint")
+    COSMOS_DB_KEY: Optional[str] = Field(None, description="Azure Cosmos DB Key")
     
-    def __post_init__(self):
-        """Initialize derived configuration values."""
-        self.trades_table = f"{self.dynamodb_table_prefix}-trades"
-        self.positions_table = f"{self.dynamodb_table_prefix}-positions"
-        self.channels_table = f"{self.dynamodb_table_prefix}-channels"
+    # Redis Configuration
+    REDIS_HOST: str = Field("localhost", description="Redis Cache Host")
+    REDIS_PORT: int = Field(6379, description="Redis Cache Port")
+    REDIS_PASSWORD: Optional[str] = Field(None, description="Redis Cache Password")
     
-    def validate_aws_credentials(self) -> bool:
-        """
-        Validate AWS credentials and permissions.
-        
-        Returns:
-            bool: True if credentials are valid and have required permissions
-        """
-        try:
-            # Test DynamoDB access
-            dynamodb = boto3.client('dynamodb', region_name=self.region)
-            dynamodb.list_tables()
-            
-            # Test Bedrock access
-            bedrock = boto3.client('bedrock-runtime', region_name=self.region)
-            bedrock.list_foundation_models()
-            
-            return True
-        except (NoCredentialsError, ClientError) as e:
-            logging.error(f"AWS credentials validation failed: {e}")
-            return False
+    # Market Data Configuration
+    MARKET_DATA_API_KEY: str = Field(env="MARKET_DATA_API_KEY", description="Market Data API Key")
+    MARKET_DATA_ENDPOINT: str = Field("https://api.marketdata.com/v1", description="Market Data API Endpoint")
+    
+    # Trading Configuration
+    MAX_POSITION_SIZE: float = Field(1000000.0, description="Maximum Position Size")
+    RISK_TOLERANCE: float = Field(0.02, description="Risk Tolerance Level")
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
 
 
 @dataclass
@@ -117,12 +78,31 @@ class MarketDataConfig:
 
 
 @dataclass
+class AlpacaConfig:
+    """Alpaca trading platform configuration."""
+    api_key: str = ""
+    secret_key: str = ""
+    base_url: str = "https://paper-api.alpaca.markets"  # Paper trading by default
+    paper_trading: bool = True
+    enabled: bool = False
+    
+    def __post_init__(self):
+        """Validate Alpaca configuration."""
+        if self.enabled and not self.api_key:
+            raise ValueError("Alpaca API key is required when Alpaca is enabled")
+        
+        if self.enabled and not self.secret_key:
+            raise ValueError("Alpaca secret key is required when Alpaca is enabled")
+
+
+@dataclass
 class TradingConfig:
     """Trading system configuration."""
     mock_execution_enabled: bool = True
     execution_delay_seconds: float = 1.0
     max_position_size: int = 10000
     max_trade_value: float = 1000000.0
+    use_real_trading: bool = False  # Flag to enable real trading via Alpaca
     supported_symbols: List[str] = field(default_factory=lambda: [
         "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "META", "NVDA", "NFLX"
     ])
@@ -161,6 +141,53 @@ class SecurityConfig:
 
 
 @dataclass
+class SlackConfig:
+    """Slack configuration settings."""
+    bot_token: str = Field(env="SLACK_BOT_TOKEN")
+    signing_secret: str = Field(env="SLACK_SIGNING_SECRET")
+    app_token: str = Field(env="SLACK_APP_TOKEN")
+    channel_id: Optional[str] = Field(None, env="SLACK_CHANNEL_ID")
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    oauth_redirect_url: Optional[str] = None
+    retry_max_attempts: int = 3
+    retry_base_delay: float = 1.0
+
+
+@dataclass
+class AWSConfig:
+    """AWS configuration settings."""
+    access_key_id: str = Field(env="AWS_ACCESS_KEY_ID")
+    secret_access_key: str = Field(env="AWS_SECRET_ACCESS_KEY")
+    region: str = Field(env="AWS_REGION", default="us-east-1")
+    endpoint_url: Optional[str] = Field(None, env="AWS_ENDPOINT_URL")
+    dynamodb_table_prefix: str = "jain-trading-bot"
+    bedrock_model_id: str = "anthropic.claude-3-sonnet-20240229-v1:0"
+    lambda_function_name: Optional[str] = None
+    api_gateway_stage: str = "prod"
+    
+    def validate_aws_credentials(self) -> bool:
+        """
+        Validate AWS credentials.
+        Returns:
+            bool: True if credentials are valid
+        """
+        try:
+            import boto3
+            session = boto3.Session(
+                aws_access_key_id=self.access_key_id,
+                aws_secret_access_key=self.secret_access_key,
+                region_name=self.region
+            )
+            # Try to make a simple API call to validate credentials
+            sts = session.client('sts')
+            sts.get_caller_identity()
+            return True
+        except Exception:
+            return False
+
+
+@dataclass
 class AppConfig:
     """Main application configuration container."""
     environment: Environment
@@ -170,6 +197,7 @@ class AppConfig:
     market_data: MarketDataConfig
     trading: TradingConfig
     security: SecurityConfig
+    alpaca: AlpacaConfig
     
     # Application metadata
     app_name: str = "Jain Global Slack Trading Bot"
@@ -355,7 +383,17 @@ class ConfigurationManager:
                 execution_delay_seconds=float(os.getenv('EXECUTION_DELAY_SECONDS', '1.0')),
                 max_position_size=int(os.getenv('MAX_POSITION_SIZE', '10000')),
                 max_trade_value=float(os.getenv('MAX_TRADE_VALUE', '1000000.0')),
+                use_real_trading=os.getenv('USE_REAL_TRADING', 'false').lower() == 'true',
                 supported_symbols=[s.strip().upper() for s in supported_symbols]
+            )
+            
+            # Load Alpaca configuration
+            alpaca_config = AlpacaConfig(
+                api_key=os.getenv('ALPACA_API_KEY', ''),
+                secret_key=os.getenv('ALPACA_SECRET_KEY', ''),
+                base_url=os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets'),
+                paper_trading=os.getenv('ALPACA_PAPER_TRADING', 'true').lower() == 'true',
+                enabled=os.getenv('ALPACA_ENABLED', 'false').lower() == 'true'
             )
             
             # Load security configuration
@@ -379,6 +417,7 @@ class ConfigurationManager:
                 market_data=market_data_config,
                 trading=trading_config,
                 security=security_config,
+                alpaca=alpaca_config,
                 debug_mode=debug_mode
             )
             
