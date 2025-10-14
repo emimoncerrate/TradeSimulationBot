@@ -348,6 +348,15 @@ def create_slack_app() -> App:
             logger.error(f"Failed to register action handlers: {e}")
             raise
         
+        # Register interactive action handlers
+        try:
+            from listeners.interactive_actions import interactive_handler
+            interactive_handler.register_handlers(app)
+            logger.info("Interactive action handlers registered successfully")
+        except Exception as e:
+            logger.error(f"Failed to register interactive action handlers: {e}")
+            raise
+        
         try:
             register_event_handlers(app, service_container)
             logger.info("Event handlers registered successfully")

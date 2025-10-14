@@ -451,6 +451,11 @@ class EnhancedTradeCommand:
             
             # Store active session for real-time updates
             session_key = f"{user.user_id}_{market_context.channel_id}"
+            
+            # Clean up any existing session first
+            if session_key in self.active_sessions:
+                del self.active_sessions[session_key]
+            
             self.active_sessions[session_key] = market_context
             
             # Start real-time updates if enabled
@@ -483,17 +488,67 @@ class EnhancedTradeCommand:
                 raise Exception(f"Insufficient permissions. Missing: {permission.value}")
     
     def _extract_symbol(self, command_text: str) -> Optional[str]:
-        """Extract stock symbol from command text."""
+        """Extract stock symbol from command text using the same logic as the main trade command."""
         if not command_text:
             return None
         
-        # Simple symbol extraction - first word that looks like a stock symbol
-        words = command_text.upper().split()
-        for word in words:
-            if word.isalpha() and 1 <= len(word) <= 5:
-                return word
+        # Use the same parsing logic as the main trade command
+        parameters = self._parse_trade_parameters(command_text)
+        return parameters.get('symbol')
+    
+    def _parse_trade_parameters(self, command_text: str) -> Dict[str, Any]:
+        """
+        Parse trade command parameters from command text.
         
-        return None
+        Supports formats like:
+        - "/trade 500 buy aapl"
+        - "/trade buy 500 aapl"
+        - "/trade aapl buy 500"
+        - "/trade sell 100 tsla"
+        """
+        parameters = {}
+        
+        if not command_text:
+            return parameters
+        
+        # Clean and split the command text
+        parts = [part.strip().upper() for part in command_text.split() if part.strip()]
+        
+        if not parts:
+            return parameters
+        
+        # Parse each part and categorize
+        for part in parts:
+            # Check for trade type (BUY/SELL)
+            if part in ['BUY', 'SELL'] and 'trade_type' not in parameters:
+                parameters['trade_type'] = part
+                continue
+            
+            # Check for quantity (integer)
+            if part.isdigit() and 'quantity' not in parameters:
+                try:
+                    quantity = int(part)
+                    if quantity > 0:
+                        parameters['quantity'] = quantity
+                        continue
+                except ValueError:
+                    pass
+            
+            # Check for symbol (alphabetic, 1-5 characters)
+            if part.isalpha() and 1 <= len(part) <= 5 and 'symbol' not in parameters:
+                parameters['symbol'] = part
+                continue
+            
+            # Check for price (decimal number)
+            try:
+                price = float(part)
+                if price > 0 and 'price' not in parameters:
+                    parameters['price'] = price
+                    continue
+            except ValueError:
+                pass
+        
+        return parameters
     
     async def _fetch_market_data(self, context: EnhancedMarketContext) -> None:
         """Fetch comprehensive market data for the symbol."""
@@ -940,33 +995,47 @@ class EnhancedTradeCommand:
         """Start real-time market data updates for active session."""
         logger.info(f"Starting real-time updates for session: {session_key}")
         
-        while session_key in self.active_sessions:
-            try:
-                context = self.active_sessions[session_key]
-                
-                if not context.auto_refresh or not context.symbol:
+        try:
+            # Limit the update loop to prevent infinite running
+            max_updates = 10  # Maximum number of updates
+            update_count = 0
+            
+            while session_key in self.active_sessions and update_count < max_updates:
+                try:
+                    context = self.active_sessions[session_key]
+                    
+                    if not context.auto_refresh or not context.symbol:
+                        await asyncio.sleep(context.refresh_interval)
+                        continue
+                    
+                    # Fetch updated market data
+                    await self._fetch_market_data(context)
+                    
+                    # Update modal with new data
+                    updated_modal = await self._create_enhanced_market_modal(context)
+                    
+                    # Update the view (this would require storing view_id)
+                    # For now, we'll just log the update
+                    logger.info(
+                        f"Market data updated for session {session_key}, "
+                        f"symbol: {context.symbol}, "
+                        f"price: {float(context.current_quote.current_price) if context.current_quote else None}"
+                    )
+                    
+                    update_count += 1
                     await asyncio.sleep(context.refresh_interval)
-                    continue
-                
-                # Fetch updated market data
-                await self._fetch_market_data(context)
-                
-                # Update modal with new data
-                updated_modal = await self._create_enhanced_market_modal(context)
-                
-                # Update the view (this would require storing view_id)
-                # For now, we'll just log the update
-                logger.info(
-                    f"Market data updated for session {session_key}, "
-                    f"symbol: {context.symbol}, "
-                    f"price: {float(context.current_quote.current_price) if context.current_quote else None}"
-                )
-                
-                await asyncio.sleep(context.refresh_interval)
-                
-            except Exception as e:
-                logger.error(f"Error in real-time updates: {str(e)}")
-                await asyncio.sleep(60)  # Wait longer on error
+                    
+                except Exception as e:
+                    logger.error(f"Error in real-time updates: {str(e)}")
+                    break
+                    
+        except asyncio.CancelledError:
+            logger.info(f"Real-time updates cancelled for session: {session_key}")
+        finally:
+            # Clean up session
+            if session_key in self.active_sessions:
+                del self.active_sessions[session_key]
+            logger.info(f"Real-time updates ended for session: {session_key}")
     
     async def _send_error_response(self, client: WebClient, body: Dict[str, Any], error_message: str) -> None:
         """Send error response to user."""
