@@ -1,6 +1,8 @@
 """Authentication service for Teams Trading Bot."""
 
 import os
+import time
+import uuid
 import hashlib
 import jwt
 import logging
