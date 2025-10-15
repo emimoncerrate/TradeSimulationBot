@@ -602,10 +602,12 @@ class AuthService:
             
         except Exception as e:
             logger.error(f"Failed to get or create user: {e}")
+            # Use locals() to safely get slack_user_id even if there's a scope issue
+            user_id_for_error = locals().get('slack_user_id', 'unknown')
             raise AuthenticationError(
                 "Failed to process user information",
                 "USER_PROCESSING_ERROR",
-                slack_user_id
+                user_id_for_error
             )
     
     async def _update_user_from_slack_info(self, user: User, slack_user_info: Dict[str, Any]) -> None:
