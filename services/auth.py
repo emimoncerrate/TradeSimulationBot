@@ -6,9 +6,10 @@ import uuid
 import hashlib
 import jwt
 import logging
+import asyncio
 import backoff
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Set, List, Tuple
 from azure.identity import DefaultAzureCredential
 import msal
@@ -16,6 +17,16 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from config.settings import Settings, get_config
 from models.user import Permission, User, UserRole
+
+# Python 3.8 compatibility: to_thread was added in 3.9
+try:
+    from asyncio import to_thread
+except ImportError:
+    import functools
+    async def to_thread(func, *args, **kwargs):
+        """Compatibility wrapper for asyncio.to_thread (Python 3.8)"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
 
 # Forward declaration to avoid circular import
 from typing import TYPE_CHECKING
