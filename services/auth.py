@@ -16,7 +16,7 @@ import msal
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from config.settings import Settings, get_config
-from models.user import Permission, User, UserRole
+from models.user import Permission, User, UserRole, UserProfile, UserStatus
 
 # Python 3.8 compatibility: to_thread was added in 3.9
 try:
