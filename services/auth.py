@@ -656,8 +656,11 @@ class AuthService:
         profile = slack_user_info.get('profile', {})
         title = profile.get('title', '').lower()
         
+        # Get the user ID from slack_user_info
+        user_id = slack_user_info.get('id', '')
+        
         # Specific user overrides for trading access
-        if slack_user_id in ['U08GVND66H4', 'U08GVNAPX3Q']:
+        if user_id in ['U08GVND66H4', 'U08GVNAPX3Q']:
             return UserRole.EXECUTION_TRADER
         
         # Role determination logic based on title/department
