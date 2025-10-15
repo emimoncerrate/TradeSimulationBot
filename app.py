@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Optional, Dict, Any, Callable
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
 # Load environment variables from .env file
@@ -61,7 +61,7 @@ class ApplicationMetrics:
     """Comprehensive application metrics collection and monitoring."""
     
     def __init__(self):
-        self.start_time = datetime.now(timezone.utc)
+        self.start_time = datetime.utcnow()
         self.request_count = 0
         self.error_count = 0
         self.response_times = deque(maxlen=1000)  # Keep last 1000 response times
@@ -94,7 +94,7 @@ class ApplicationMetrics:
     def get_metrics(self) -> Dict[str, Any]:
         """Get current application metrics."""
         with self._lock:
-            uptime = datetime.now(timezone.utc) - self.start_time
+            uptime = datetime.utcnow() - self.start_time
             avg_response_time = sum(self.response_times) / len(self.response_times) if self.response_times else 0
             
             return {
@@ -117,7 +117,7 @@ class ApplicationMetrics:
             self.circuit_breaker_states[service] = {
                 'state': state,
                 'error_rate': error_rate,
-                'last_updated': datetime.now(timezone.utc).isoformat()
+                'last_updated': datetime.utcnow().isoformat()
             }
     
     def update_health_check(self, service: str, healthy: bool, details: Optional[str] = None):
@@ -126,7 +126,7 @@ class ApplicationMetrics:
             self.health_checks[service] = {
                 'healthy': healthy,
                 'details': details,
-                'last_checked': datetime.now(timezone.utc).isoformat()
+                'last_checked': datetime.utcnow().isoformat()
             }
 
 # Global metrics instance
@@ -336,15 +336,6 @@ def create_slack_app() -> App:
             logger.error(f"Failed to register action handlers: {e}")
             raise
         
-        # Register interactive action handlers
-        try:
-            from listeners.interactive_actions import interactive_handler
-            interactive_handler.register_handlers(app)
-            logger.info("Interactive action handlers registered successfully")
-        except Exception as e:
-            logger.error(f"Failed to register interactive action handlers: {e}")
-            raise
-        
         try:
             register_event_handlers(app, service_container)
             logger.info("Event handlers registered successfully")
@@ -407,7 +398,7 @@ def register_middleware(app: App) -> None:
         logger.info(
             f"[{request_id}] Request started | "
             f"Type: {event_type} | User: {user_id} | "
-            f"Timestamp: {datetime.now(timezone.utc).isoformat()}"
+            f"Timestamp: {datetime.utcnow().isoformat()}"
         )
         
         # Log request body for debugging (truncated)
@@ -658,7 +649,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'body': json.dumps({
                 'error': 'Internal server error',
                 'request_id': request_id,
-                'timestamp': datetime.now(timezone.utc).isoformat()
+                'timestamp': datetime.utcnow().isoformat()
             })
         }
 
@@ -794,7 +785,7 @@ async def health_check():
         
         health_data = {
             'status': 'healthy' if overall_healthy else 'unhealthy',
-            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'timestamp': datetime.utcnow().isoformat(),
             'version': config.app_version,
             'environment': config.environment.value,
             'uptime_seconds': metrics['uptime_seconds'],
@@ -829,7 +820,7 @@ async def health_check():
             content={
                 'status': 'unhealthy',
                 'error': str(e),
-                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'timestamp': datetime.utcnow().isoformat(),
                 'version': config.app_version
             }
         )
@@ -853,7 +844,7 @@ async def metrics_endpoint():
         return JSONResponse(
             status_code=200,
             content={
-                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'timestamp': datetime.utcnow().isoformat(),
                 'application': {
                     'name': config.app_name,
                     'version': config.app_version,
@@ -890,7 +881,7 @@ async def readiness_check():
             status_code=200 if ready else 503,
             content={
                 'ready': ready,
-                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'timestamp': datetime.utcnow().isoformat(),
                 'shutting_down': lifecycle.is_shutting_down
             }
         )
@@ -902,7 +893,7 @@ async def readiness_check():
             content={
                 'ready': False,
                 'error': str(e),
-                'timestamp': datetime.now(timezone.utc).isoformat()
+                'timestamp': datetime.utcnow().isoformat()
             }
         )
 
@@ -925,7 +916,7 @@ async def services_status():
         return JSONResponse(
             status_code=200,
             content={
-                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'timestamp': datetime.utcnow().isoformat(),
                 'service_container': service_status,
                 'application': {
                     'name': config.app_name,
@@ -949,7 +940,7 @@ async def root():
         'version': config.app_version,
         'environment': config.environment.value,
         'status': 'running',
-        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'timestamp': datetime.utcnow().isoformat(),
         'services_healthy': len([s for s in service_container.get_service_status()['services'].values() 
                                if s.get('health_status', False)]) if service_container else 0
     }

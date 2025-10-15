@@ -1,17 +1,6 @@
-# 🤖 Jain Global Slack Trading Bot
+# Jain Global Slack Trading Bot
 
 A sophisticated Slack-based trading simulation bot for Jain Global investment management firm. This bot enables traders, analysts, and Portfolio Managers to simulate trades directly within Slack with AI-powered risk analysis and comprehensive portfolio tracking.
-
-## 📁 **Project Organization**
-- **📖 Complete Setup Guide**: [docs/setup/SETUP_LOG.md](docs/setup/SETUP_LOG.md)
-- **🗂️ Project Structure**: [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
-- **🔧 Database Viewer**: [tools/view_database.py](tools/view_database.py)
-- **🧪 Test Suite**: [tests/](tests/)
-
-## 🚀 **Quick Start**
-1. Follow the setup guide: [docs/setup/SETUP_LOG.md](docs/setup/SETUP_LOG.md)
-2. Configure your `.env` file
-3. Run: `python app.py`
 
 ## 🚀 Features
 

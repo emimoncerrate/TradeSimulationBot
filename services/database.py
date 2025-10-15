@@ -27,9 +27,6 @@ from models.trade import Trade, TradeStatus, TradeType, RiskLevel, TradeValidati
 from models.user import User, UserRole, UserStatus, Permission, UserProfile, UserValidationError
 from models.portfolio import Portfolio, Position, PortfolioStatus, PositionType, PortfolioValidationError
 
-# Import serialization utilities
-from utils.serializers import serialize_for_dynamodb, deserialize_from_dynamodb
-
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -84,37 +81,29 @@ class DatabaseService:
     - Audit trail logging
     """
     
-    def __init__(self, region_name: str = None, endpoint_url: Optional[str] = None,
+    def __init__(self, region_name: str = 'us-east-1', endpoint_url: Optional[str] = None,
                  max_retries: int = 3, timeout: int = 30):
         """
         Initialize the database service.
         
         Args:
-            region_name: AWS region name (defaults to environment variable)
-            endpoint_url: DynamoDB endpoint URL (auto-detected for local development)
+            region_name: AWS region name
+            endpoint_url: DynamoDB endpoint URL (for local development)
             max_retries: Maximum number of retry attempts
             timeout: Connection timeout in seconds
         """
-        # Auto-detect configuration from environment
-        self.region_name = region_name or os.getenv('AWS_REGION', 'us-east-1')
-        
-        # Auto-detect local endpoint for development
-        if endpoint_url is None and os.getenv('AWS_ACCESS_KEY_ID') == 'local':
-            self.endpoint_url = os.getenv('DYNAMODB_LOCAL_ENDPOINT', 'http://localhost:8000')
-        else:
-            self.endpoint_url = endpoint_url
-            
+        self.region_name = region_name
+        self.endpoint_url = endpoint_url
         self.max_retries = max_retries
         self.timeout = timeout
         
-        # Table names from environment configuration
-        table_prefix = os.getenv('DYNAMODB_TABLE_PREFIX', 'jain-trading-bot')
-        self.trades_table_name = f'{table_prefix}-trades'
-        self.positions_table_name = f'{table_prefix}-positions'
-        self.users_table_name = f'{table_prefix}-users'
-        self.channels_table_name = f'{table_prefix}-channels'
-        self.portfolios_table_name = f'{table_prefix}-portfolios'
-        self.audit_table_name = f'{table_prefix}-audit'
+        # Table names
+        self.trades_table_name = 'slack-trading-bot-trades'
+        self.positions_table_name = 'slack-trading-bot-positions'
+        self.users_table_name = 'slack-trading-bot-users'
+        self.channels_table_name = 'slack-trading-bot-channels'
+        self.portfolios_table_name = 'slack-trading-bot-portfolios'
+        self.audit_table_name = 'slack-trading-bot-audit'
         
         # Connection and client setup
         self._dynamodb_client = None
@@ -146,8 +135,6 @@ class DatabaseService:
     
     def _use_mock_mode(self) -> None:
         """Initialize mock database for development."""
-        from models.user import User, UserRole, UserStatus, UserProfile
-        
         self.mock_data = {
             'users': {},
             'trades': {},
@@ -155,78 +142,24 @@ class DatabaseService:
             'portfolios': {}
         }
         self.is_mock_mode = True
-        
-        # Create a default test user for development
-        test_profile = UserProfile(
-            display_name="Test User",
-            email="test@example.com",
-            department="Trading"
-        )
-        
-        test_user = User(
-            user_id="test-user-123",
-            slack_user_id="U08GVN6F4FQ",  # The user ID from the error
-            role=UserRole.EXECUTION_TRADER,
-            profile=test_profile,
-            status=UserStatus.ACTIVE
-        )
-        
-        # Store the test user
-        self.mock_data['users']['test-user-123'] = test_user
-        
         logger.info("DatabaseService initialized in MOCK MODE for development")
         
         # Override methods with mock implementations
         self.get_user = self._mock_get_user
-        self.get_user_by_slack_id = self._mock_get_user_by_slack_id
         self.create_user = self._mock_create_user
-        self.update_user = self._mock_update_user
-        self.get_users_by_role = self._mock_get_users_by_role
-        self.get_users_by_portfolio_manager = self._mock_get_users_by_portfolio_manager
         self.get_trade = self._mock_get_trade
         self.log_trade = self._mock_log_trade
         self.get_user_positions = self._mock_get_user_positions
         self.update_position = self._mock_update_position
-        self._log_audit_event = self._mock_log_audit_event
     
     async def _mock_get_user(self, user_id: str) -> Optional[User]:
         """Mock implementation for get_user."""
         return self.mock_data['users'].get(user_id)
     
-    async def _mock_get_user_by_slack_id(self, slack_user_id: str) -> Optional[User]:
-        """Mock implementation for get_user_by_slack_id."""
-        # Search through users to find one with matching slack_user_id
-        for user in self.mock_data['users'].values():
-            if hasattr(user, 'slack_user_id') and user.slack_user_id == slack_user_id:
-                return user
-        return None
-    
     async def _mock_create_user(self, user: User) -> bool:
         """Mock implementation for create_user."""
         self.mock_data['users'][user.user_id] = user
         return True
-    
-    async def _mock_update_user(self, user: User) -> bool:
-        """Mock implementation for update_user."""
-        self.mock_data['users'][user.user_id] = user
-        return True
-    
-    async def _mock_get_users_by_role(self, role) -> List:
-        """Mock implementation for get_users_by_role."""
-        from models.user import UserRole
-        if isinstance(role, str):
-            role = UserRole(role)
-        return [user for user in self.mock_data['users'].values() if user.role == role]
-    
-    async def _mock_get_users_by_portfolio_manager(self, pm_id: str) -> List:
-        """Mock implementation for get_users_by_portfolio_manager."""
-        return [user for user in self.mock_data['users'].values() 
-                if user.portfolio_manager_id == pm_id]
-    
-    def _mock_log_audit_event(self, event_type: str, user_id: str, details: dict) -> None:
-        """Mock implementation for _log_audit_event."""
-        # Just log it, don't store anything
-        logger.info(f"Mock audit event: {event_type} for user {user_id}: {details}")
     
     async def _mock_get_trade(self, user_id: str, trade_id: str) -> Optional[Trade]:
         """Mock implementation for get_trade."""
@@ -273,21 +206,15 @@ class DatabaseService:
             
             # Create client and resource
             if self.endpoint_url:
-                # Local development - use local credentials
+                # Local development
                 self._dynamodb_client = boto3.client(
                     'dynamodb',
                     endpoint_url=self.endpoint_url,
-                    aws_access_key_id='local',
-                    aws_secret_access_key='local',
-                    region_name=self.region_name,
                     config=config
                 )
                 self._dynamodb_resource = boto3.resource(
                     'dynamodb',
                     endpoint_url=self.endpoint_url,
-                    aws_access_key_id='local',
-                    aws_secret_access_key='local',
-                    region_name=self.region_name,
                     config=config
                 )
             else:
@@ -462,12 +389,7 @@ class DatabaseService:
             }
             
             # Store audit entry asynchronously to avoid blocking main operations
-            task = asyncio.create_task(self._store_audit_entry(audit_entry))
-            # Add task to a set to prevent garbage collection
-            if not hasattr(self, '_background_tasks'):
-                self._background_tasks = set()
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+            asyncio.create_task(self._store_audit_entry(audit_entry))
             
         except Exception as e:
             logger.error(f"Failed to log audit event: {str(e)}")
@@ -501,10 +423,14 @@ class DatabaseService:
             # Validate trade data
             trade.validate()
             
-            # Convert trade to DynamoDB item with proper serialization
-            item = serialize_for_dynamodb(trade)
+            # Convert trade to DynamoDB item
+            item = trade.to_dict()
             
-            # Add DynamoDB specific fields (trades table uses user_id and trade_id as keys)
+            # Add DynamoDB specific fields
+            item['pk'] = f"USER#{trade.user_id}"
+            item['sk'] = f"TRADE#{trade.trade_id}"
+            item['gsi1pk'] = f"SYMBOL#{trade.symbol}"
+            item['gsi1sk'] = trade.timestamp.isoformat()
             item['ttl'] = int((datetime.now(timezone.utc) + timedelta(days=2555)).timestamp())  # 7 years retention
             
             # Store in database
@@ -512,7 +438,7 @@ class DatabaseService:
             await self._execute_with_retry(
                 table.put_item,
                 Item=item,
-                ConditionExpression='attribute_not_exists(user_id) AND attribute_not_exists(trade_id)'
+                ConditionExpression='attribute_not_exists(pk) AND attribute_not_exists(sk)'
             )
             
             # Log audit event
@@ -557,28 +483,18 @@ class DatabaseService:
             response = await self._execute_with_retry(
                 table.get_item,
                 Key={
-                    'user_id': user_id,
-                    'trade_id': trade_id
+                    'pk': f"USER#{user_id}",
+                    'sk': f"TRADE#{trade_id}"
                 }
             )
             
             if 'Item' in response:
                 trade_data = response['Item']
                 # Remove DynamoDB specific fields
-                trade_data.pop('ttl', None)
+                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
+                    trade_data.pop(key, None)
                 
-                # Deserialize the data
-                deserialized_data = deserialize_from_dynamodb(trade_data)
-                
-                # Filter out fields that aren't part of the Trade model
-                valid_fields = {
-                    'trade_id', 'user_id', 'symbol', 'trade_type', 'quantity', 'price', 
-                    'status', 'timestamp', 'execution_id', 'execution_timestamp', 
-                    'execution_price', 'risk_level', 'notes', 'metadata'
-                }
-                filtered_data = {k: v for k, v in deserialized_data.items() if k in valid_fields}
-                
-                trade = Trade.from_dict(filtered_data)
+                trade = Trade.from_dict(trade_data)
                 
                 # Cache the result
                 self._set_cache(cache_key, trade_data)
@@ -630,8 +546,8 @@ class DatabaseService:
             
             # Build query parameters
             query_params = {
-                'KeyConditionExpression': 'user_id = :user_id',
-                'ExpressionAttributeValues': {':user_id': user_id},
+                'KeyConditionExpression': 'pk = :pk',
+                'ExpressionAttributeValues': {':pk': f"USER#{user_id}"},
                 'ScanIndexForward': False,  # Most recent first
                 'Limit': limit
             }
@@ -667,21 +583,11 @@ class DatabaseService:
             trades = []
             for item in response.get('Items', []):
                 # Remove DynamoDB specific fields
-                item.pop('ttl', None)
-                
-                # Deserialize the data
-                deserialized_data = deserialize_from_dynamodb(item)
-                
-                # Filter out fields that aren't part of the Trade model
-                valid_fields = {
-                    'trade_id', 'user_id', 'symbol', 'trade_type', 'quantity', 'price', 
-                    'status', 'timestamp', 'execution_id', 'execution_timestamp', 
-                    'execution_price', 'risk_level', 'notes', 'metadata'
-                }
-                filtered_data = {k: v for k, v in deserialized_data.items() if k in valid_fields}
+                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
+                    item.pop(key, None)
                 
                 try:
-                    trade = Trade.from_dict(filtered_data)
+                    trade = Trade.from_dict(item)
                     trades.append(trade)
                 except Exception as e:
                     logger.warning(f"Failed to parse trade data: {str(e)}")
@@ -733,13 +639,13 @@ class DatabaseService:
             await self._execute_with_retry(
                 table.update_item,
                 Key={
-                    'user_id': user_id,
-                    'trade_id': trade_id
+                    'pk': f"USER#{user_id}",
+                    'sk': f"TRADE#{trade_id}"
                 },
                 UpdateExpression=update_expression,
                 ExpressionAttributeValues=expression_values,
                 ExpressionAttributeNames=expression_names,
-                ConditionExpression='attribute_exists(user_id) AND attribute_exists(trade_id)'
+                ConditionExpression='attribute_exists(pk) AND attribute_exists(sk)'
             )
             
             # Clear related cache entries
@@ -934,16 +840,19 @@ class DatabaseService:
             # Validate user data
             user.validate()
             
-            # Convert user to DynamoDB item with proper serialization
-            item = serialize_for_dynamodb(user)
-            # The table uses user_id as primary key, not pk/sk
+            # Convert user to DynamoDB item
+            item = user.to_dict()
+            item['pk'] = f"USER#{user.user_id}"
+            item['sk'] = "PROFILE"
+            item['gsi1pk'] = f"SLACK#{user.slack_user_id}"
+            item['gsi1sk'] = "USER"
             item['ttl'] = int((datetime.now(timezone.utc) + timedelta(days=3650)).timestamp())  # 10 years
             
             table = self._get_table(self.users_table_name)
             await self._execute_with_retry(
                 table.put_item,
                 Item=item,
-                ConditionExpression='attribute_not_exists(user_id)'
+                ConditionExpression='attribute_not_exists(pk) AND attribute_not_exists(sk)'
             )
             
             # Log audit event
@@ -985,19 +894,18 @@ class DatabaseService:
             response = await self._execute_with_retry(
                 table.get_item,
                 Key={
-                    'user_id': user_id
+                    'pk': f"USER#{user_id}",
+                    'sk': "PROFILE"
                 }
             )
             
             if 'Item' in response:
                 user_data = response['Item']
                 # Remove DynamoDB specific fields
-                user_data.pop('ttl', None)
+                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
+                    user_data.pop(key, None)
                 
-                # Deserialize the data
-                deserialized_data = deserialize_from_dynamodb(user_data)
-                
-                user = User.from_dict(deserialized_data)
+                user = User.from_dict(user_data)
                 
                 # Cache the result
                 self._set_cache(cache_key, user_data)
@@ -1027,160 +935,39 @@ class DatabaseService:
             cache_key = self._generate_cache_key('get_user_by_slack_id', slack_user_id=slack_user_id)
             cached_result = self._get_from_cache(cache_key)
             if cached_result is not None:
-                if cached_result == False:  # Cached negative result
-                    return None
-                # Ensure cached result is a dict, not a User object
-                if isinstance(cached_result, dict):
-                    try:
-                        return User.from_dict(cached_result)
-                    except Exception as e:
-                        logger.warning(f"Invalid cached data for user {slack_user_id}, clearing cache: {e}")
-                        # Clear invalid cache entry
-                        self._query_cache.pop(cache_key, None)
-                else:
-                    # Clear invalid cache entry if it's not a dict
-                    self._query_cache.pop(cache_key, None)
+                return User.from_dict(cached_result) if cached_result else None
             
             table = self._get_table(self.users_table_name)
             response = await self._execute_with_retry(
                 table.query,
                 IndexName='gsi1',
-                KeyConditionExpression='slack_user_id = :slack_user_id',
+                KeyConditionExpression='gsi1pk = :gsi1pk AND gsi1sk = :gsi1sk',
                 ExpressionAttributeValues={
-                    ':slack_user_id': slack_user_id
+                    ':gsi1pk': f"SLACK#{slack_user_id}",
+                    ':gsi1sk': "USER"
                 }
             )
             
             if response.get('Items'):
                 user_data = response['Items'][0]
                 # Remove DynamoDB specific fields
-                user_data.pop('ttl', None)
+                for key in ['pk', 'sk', 'gsi1pk', 'gsi1sk', 'ttl']:
+                    user_data.pop(key, None)
                 
-                # Deserialize the data
-                deserialized_data = deserialize_from_dynamodb(user_data)
+                user = User.from_dict(user_data)
                 
-                # Filter out fields that aren't part of the User model
-                valid_fields = {
-                    'user_id', 'slack_user_id', 'role', 'status', 'profile', 
-                    'permissions', 'portfolio_manager_id', 'additional_roles',
-                    'channel_restrictions', 'session_data', 'security_settings',
-                    'audit_trail', 'metadata'
-                }
-                filtered_data = {k: v for k, v in deserialized_data.items() if k in valid_fields}
-                
-                user = User.from_dict(filtered_data)
-                
-                # Cache the filtered data (not the raw user_data)
-                self._set_cache(cache_key, filtered_data)
+                # Cache the result
+                self._set_cache(cache_key, user_data)
                 
                 return user
             
             # Cache negative result
-            self._set_cache(cache_key, False)
+            self._set_cache(cache_key, None)
             return None
             
         except Exception as e:
             logger.error(f"Failed to get user by Slack ID {slack_user_id}: {str(e)}")
             raise DatabaseError(f"Failed to retrieve user by Slack ID: {str(e)}", "USER_GET_BY_SLACK_FAILED", e)
-    
-    async def update_user(self, user: User) -> bool:
-        """
-        Update an existing user in the database.
-        
-        Args:
-            user: User object with updated information
-            
-        Returns:
-            True if update was successful
-            
-        Raises:
-            DatabaseError: If update fails
-        """
-        try:
-            # Convert user to DynamoDB format with proper serialization
-            user_data = serialize_for_dynamodb(user)
-            
-            # Add GSI keys for Slack ID lookup
-            user_data['gsi1pk'] = f"SLACK#{user.slack_user_id}"
-            user_data['gsi1sk'] = "USER"
-            
-            table = self._get_table(self.users_table_name)
-            await self._execute_with_retry(
-                table.put_item,
-                Item=user_data
-            )
-            
-            # Update cache
-            cache_key = self._generate_cache_key('get_user', user_id=user.user_id)
-            self._set_cache(cache_key, user)
-            
-            # Update Slack ID cache
-            slack_cache_key = self._generate_cache_key('get_user_by_slack_id', slack_user_id=user.slack_user_id)
-            self._set_cache(slack_cache_key, user)
-            
-            logger.info(f"User {user.user_id} updated successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to update user {user.user_id}: {str(e)}")
-            raise DatabaseError(f"Failed to update user: {str(e)}", "USER_UPDATE_FAILED", e)
-    
-    async def get_users_by_role(self, role) -> List:
-        """
-        Get all users with a specific role.
-        
-        Args:
-            role: UserRole enum or string
-            
-        Returns:
-            List of User objects with the specified role
-            
-        Raises:
-            DatabaseError: If query fails
-        """
-        try:
-            from models.user import UserRole, User
-            
-            # Convert role to string if it's an enum
-            if isinstance(role, UserRole):
-                role_str = role.value
-            else:
-                role_str = str(role)
-            
-            # Check cache first
-            cache_key = self._generate_cache_key('get_users_by_role', role=role_str)
-            cached_result = self._get_from_cache(cache_key)
-            if cached_result is not None:
-                return cached_result
-            
-            table = self._get_table(self.users_table_name)
-            
-            # Scan table for users with the specified role
-            # Note: This is not the most efficient for large datasets, 
-            # but works for development. In production, consider adding a GSI for roles.
-            response = await self._execute_with_retry(
-                table.scan,
-                FilterExpression='#role = :role',
-                ExpressionAttributeNames={'#role': 'role'},
-                ExpressionAttributeValues={':role': role_str}
-            )
-            
-            users = []
-            for item in response.get('Items', []):
-                # Remove DynamoDB specific fields
-                clean_item = {k: v for k, v in item.items() if not k.startswith('gsi')}
-                user = User.from_dict(clean_item)
-                users.append(user)
-            
-            # Cache the result
-            self._set_cache(cache_key, users)
-            
-            logger.debug(f"Found {len(users)} users with role {role_str}")
-            return users
-            
-        except Exception as e:
-            logger.error(f"Failed to get users by role {role}: {str(e)}")
-            raise DatabaseError(f"Failed to retrieve users by role: {str(e)}", "USER_GET_BY_ROLE_FAILED", e)
     
     # Channel Management Methods
     

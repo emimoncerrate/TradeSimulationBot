@@ -197,28 +197,27 @@ class TradeWidget:
                 })
             }
             
-            # Add submit button - required when input blocks are present
-            modal["submit"] = {
-                "type": "plain_text",
-                "text": modal_config['submit_text'] if self._should_show_submit_button(context) else "Continue"
-            }
+            # Add submit button if appropriate
+            if self._should_show_submit_button(context):
+                modal["submit"] = {
+                    "type": "plain_text",
+                    "text": modal_config['submit_text']
+                }
             
             # Add notification text for accessibility
             if self.accessibility_enabled:
                 modal["notify_on_close"] = True
             
-            self.logger.info(
-                f"Trade modal created | "
-                f"User: {context.user.user_id} | "
-                f"State: {context.state.value} | "
-                f"Theme: {context.theme.value} | "
-                f"Blocks: {len(modal['blocks'])}"
-            )
+            self.logger.info("Trade modal created",
+                           user_id=context.user.user_id,
+                           state=context.state.value,
+                           theme=context.theme.value,
+                           blocks_count=len(modal["blocks"]))
             
             return modal
             
         except Exception as e:
-            self.logger.error(f"Failed to create trade modal: {str(e)}")
+            self.logger.error("Failed to create trade modal", error=str(e))
             return self._create_error_modal(str(e))
     
     def update_modal_with_market_data(
@@ -249,7 +248,7 @@ class TradeWidget:
             return self.create_trade_modal(context)
             
         except Exception as e:
-            self.logger.error(f"Failed to update modal with market data: {str(e)}")
+            self.logger.error("Failed to update modal with market data", error=str(e))
             context.state = WidgetState.ERROR
             context.errors['market_data'] = f"Failed to load market data: {str(e)}"
             return self.create_trade_modal(context)
@@ -288,7 +287,7 @@ class TradeWidget:
             return self.create_trade_modal(context)
             
         except Exception as e:
-            self.logger.error(f"Failed to update modal with risk analysis: {str(e)}")
+            self.logger.error("Failed to update modal with risk analysis", error=str(e))
             context.state = WidgetState.ERROR
             context.errors['risk_analysis'] = f"Risk analysis failed: {str(e)}"
             return self.create_trade_modal(context)
@@ -337,16 +336,14 @@ class TradeWidget:
                 })
             }
             
-            self.logger.info(
-                f"Confirmation modal created | "
-                f"User: {context.user.user_id} | "
-                f"Risk level: {context.risk_analysis.overall_risk_level.value}"
-            )
+            self.logger.info("Confirmation modal created",
+                           user_id=context.user.user_id,
+                           risk_level=context.risk_analysis.overall_risk_level.value)
             
             return modal
             
         except Exception as e:
-            self.logger.error(f"Failed to create confirmation modal: {str(e)}")
+            self.logger.error("Failed to create confirmation modal", error=str(e))
             return self._create_error_modal(str(e))
     
     def _get_modal_config(self, context: WidgetContext) -> Dict[str, str]:
@@ -529,7 +526,36 @@ class TradeWidget:
         if 'quantity' in context.errors:
             quantity_element["placeholder"]["text"] = f"Error: {context.errors['quantity']}"
         
-        # Add quantity input
+        price_element = {
+            "type": "plain_text_input",
+            "action_id": "price",
+            "placeholder": {
+                "type": "plain_text",
+                "text": "Price per share ($)"
+            }
+        }
+        
+        if context.price:
+            price_element["initial_value"] = str(context.price)
+        
+        if 'price' in context.errors:
+            price_element["placeholder"]["text"] = f"Error: {context.errors['price']}"
+        
+        # Create side-by-side layout
+        blocks.append({
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": "*Quantity*"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*Price per Share*"
+                }
+            ]
+        })
+        
         blocks.append({
             "type": "input",
             "block_id": "quantity_input",
@@ -540,22 +566,13 @@ class TradeWidget:
             }
         })
         
-        # Add current price display (not input)
-        if context.market_quote and context.market_quote.current_price:
-            price_text = f"*Current Price:* ${context.market_quote.current_price:.2f}"
-            if context.market_quote.price_change:
-                change_symbol = "📈" if context.market_quote.price_change >= 0 else "📉"
-                price_text += f"\n{change_symbol} Change: ${context.market_quote.price_change:.2f}"
-            if hasattr(context.market_quote, 'percent_change') and context.market_quote.percent_change:
-                price_text += f" ({context.market_quote.percent_change:.2f}%)"
-        else:
-            price_text = "*Current Price:* Loading..."
-        
         blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": price_text
+            "type": "input",
+            "block_id": "price_input",
+            "element": price_element,
+            "label": {
+                "type": "plain_text",
+                "text": "Price"
             }
         })
         
@@ -563,31 +580,27 @@ class TradeWidget:
         action_elements = []
         
         # Market data button
-        market_data_button = {
+        action_elements.append({
             "type": "button",
             "text": {
                 "type": "plain_text",
                 "text": "📊 Get Market Data"
             },
-            "action_id": "get_market_data"
-        }
-        if not context.market_quote:
-            market_data_button["style"] = "primary"
-        action_elements.append(market_data_button)
+            "action_id": "get_market_data",
+            "style": "primary" if not context.market_quote else None
+        })
         
         # Risk analysis button (only if market data is available)
         if context.market_quote:
-            risk_button = {
+            action_elements.append({
                 "type": "button",
                 "text": {
                     "type": "plain_text",
                     "text": "🔍 Analyze Risk"
                 },
-                "action_id": "analyze_risk"
-            }
-            if not context.risk_analysis:
-                risk_button["style"] = "primary"
-            action_elements.append(risk_button)
+                "action_id": "analyze_risk",
+                "style": "primary" if not context.risk_analysis else None
+            })
         
         if action_elements:
             blocks.append({
@@ -1104,16 +1117,14 @@ class TradeWidget:
             
             is_valid = len(errors) == 0
             
-            self.logger.debug(
-                f"Modal input validation completed | "
-                f"Valid: {is_valid} | "
-                f"Errors: {len(errors)}"
-            )
+            self.logger.debug("Modal input validation completed",
+                            is_valid=is_valid,
+                            error_count=len(errors))
             
             return is_valid, errors
             
         except Exception as e:
-            self.logger.error(f"Modal input validation failed: {str(e)}")
+            self.logger.error("Modal input validation failed", error=str(e))
             return False, {'general': f"Validation error: {str(e)}"}
     
     def extract_trade_data(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1135,5 +1146,5 @@ class TradeWidget:
                 'confirmation_text': form_data.get('confirmation_text', '').strip()
             }
         except Exception as e:
-            self.logger.error(f"Failed to extract trade data: {str(e)}")
+            self.logger.error("Failed to extract trade data", error=str(e))
             raise ValueError(f"Invalid trade data: {str(e)}")

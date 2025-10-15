@@ -419,52 +419,6 @@ class MarketDataService:
         
         self.logger.info("MarketDataService cleanup complete")
     
-    async def _ensure_session_initialized(self) -> None:
-        """Ensure HTTP session is initialized with robust error handling."""
-        # Check if session needs to be created or recreated
-        needs_new_session = (
-            self.session is None or 
-            self.session.closed or
-            getattr(self.session, '_loop', None) is None or
-            getattr(self.session, '_loop', None).is_closed()
-        )
-        
-        if needs_new_session:
-            try:
-                # Clean up existing session if it exists
-                if self.session is not None:
-                    try:
-                        if not self.session.closed:
-                            await self.session.close()
-                    except:
-                        pass
-                    self.session = None
-                
-                # Create new session with robust configuration
-                self.session = aiohttp.ClientSession(
-                    headers={
-                        'User-Agent': 'Jain-Global-Trading-Bot/1.0',
-                        'Accept': 'application/json'
-                    },
-                    connector=aiohttp.TCPConnector(
-                        limit=10,
-                        limit_per_host=5,
-                        enable_cleanup_closed=True,
-                        force_close=True
-                    )
-                )
-                self.logger.info("HTTP session initialized successfully")
-                
-            except Exception as e:
-                self.logger.error(f"Failed to initialize HTTP session: {e}")
-                # Create minimal fallback session
-                try:
-                    self.session = aiohttp.ClientSession()
-                    self.logger.warning("Created minimal HTTP session as fallback")
-                except Exception as fallback_error:
-                    self.logger.error(f"Even fallback session creation failed: {fallback_error}")
-                    raise
-    
     async def get_quote(self, symbol: str, use_cache: bool = True) -> MarketQuote:
         """
         Get real-time quote for a symbol.
@@ -480,9 +434,6 @@ class MarketDataService:
             ValueError: If symbol is invalid
             Exception: If API request fails after retries
         """
-        # Ensure HTTP session is initialized
-        await self._ensure_session_initialized()
-        
         symbol = symbol.upper().strip()
         
         if not self._is_valid_symbol_format(symbol):
@@ -686,59 +637,23 @@ class MarketDataService:
         start_time = time.time()
         
         try:
-            # Fetch real-time quote with asyncio timeout
+            # Fetch real-time quote
             quote_url = f"https://finnhub.io/api/v1/quote"
             quote_params = {
                 'symbol': symbol,
                 'token': self.config.market_data.finnhub_api_key
             }
             
-            # Make request with error handling for session issues
-            try:
-                async with self.session.get(quote_url, params=quote_params) as response:
-                    if response.status == 429:
-                        self.api_error_counter.labels(error_type='rate_limit').inc()
-                        raise Exception("Rate limit exceeded")
-                    
-                    if response.status != 200:
-                        self.api_error_counter.labels(error_type='http_error').inc()
-                        raise Exception(f"API request failed with status {response.status}")
-                    
-                    quote_data = await response.json()
-            except Exception as request_error:
-                # Handle various session-related errors by recreating the session
-                error_str = str(request_error)
-                should_recreate_session = any([
-                    "Timeout context manager should be used inside a task" in error_str,
-                    "Event loop is closed" in error_str,
-                    "Session is closed" in error_str,
-                    "Cannot connect to host" in error_str
-                ])
+            async with self.session.get(quote_url, params=quote_params) as response:
+                if response.status == 429:
+                    self.api_error_counter.labels(error_type='rate_limit').inc()
+                    raise Exception("Rate limit exceeded")
                 
-                if should_recreate_session:
-                    self.logger.warning(f"Session error, recreating session: {request_error}")
-                    # Close and recreate session
-                    try:
-                        if self.session and not self.session.closed:
-                            await self.session.close()
-                    except:
-                        pass
-                    self.session = None
-                    await self._ensure_session_initialized()
-                    
-                    # Retry the request once with new session
-                    async with self.session.get(quote_url, params=quote_params) as response:
-                        if response.status == 429:
-                            self.api_error_counter.labels(error_type='rate_limit').inc()
-                            raise Exception("Rate limit exceeded")
-                        
-                        if response.status != 200:
-                            self.api_error_counter.labels(error_type='http_error').inc()
-                            raise Exception(f"API request failed with status {response.status}")
-                        
-                        quote_data = await response.json()
-                else:
-                    raise request_error
+                if response.status != 200:
+                    self.api_error_counter.labels(error_type='http_error').inc()
+                    raise Exception(f"API request failed with status {response.status}")
+                
+                quote_data = await response.json()
             
             # Fetch company profile for additional data
             profile_url = f"https://finnhub.io/api/v1/stock/profile2"

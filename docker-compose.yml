@@ -1,27 +1,61 @@
 version: '3.8'
 
 services:
-  dynamodb-local:
-    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath ./data"
-    image: "amazon/dynamodb-local:latest"
-    container_name: dynamodb-local
-    ports:
-      - "8001:8000"
-    volumes:
-      - "./docker/dynamodb:/home/dynamodblocal/data"
-    working_dir: /home/dynamodblocal
+  trading-bot:
+    build: .
+    container_name: slack-trading-bot
     environment:
-      - AWS_ACCESS_KEY_ID=local
-      - AWS_SECRET_ACCESS_KEY=local
-      - AWS_DEFAULT_REGION=us-east-1
+      # Load from .env file (not committed to git)
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DEBUG_MODE=${DEBUG_MODE:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      
+      # Slack Configuration (REQUIRED - get your own)
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
+      
+      # Market Data (REQUIRED - get your own)
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
+      
+      # AWS (Mock for development)
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-mock-access-key-id}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-mock-secret-access-key}
+      
+      # Trading Configuration
+      - MOCK_EXECUTION_ENABLED=${MOCK_EXECUTION_ENABLED:-true}
+      - APPROVED_CHANNELS=${APPROVED_CHANNELS}
+      
+    volumes:
+      # Mount for development (optional)
+      - .:/app
+    ports:
+      # Only needed for HTTP mode
+      - "3000:3000"
+    restart: unless-stopped
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('healthy')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
+  # Optional: Redis for caching (if needed)
   redis:
-    image: "redis:7-alpine"
-    container_name: redis-local
+    image: redis:7-alpine
+    container_name: trading-bot-redis
     ports:
       - "6379:6379"
-    volumes:
-      - redis_data:/data
-
-volumes:
-  redis_data:
+    restart: unless-stopped
+    
+  # Optional: Local DynamoDB for development
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: trading-bot-dynamodb
+    ports:
+      - "8000:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+    restart: unless-stopped
