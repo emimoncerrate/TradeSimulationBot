@@ -355,8 +355,8 @@ class RiskAnalysisService:
                 region_name=self.config.aws.region
             )
             
-            # Test Bedrock connectivity
-            await self._test_bedrock_connectivity()
+            # Skip Bedrock connectivity test for now - model access needs to be enabled
+            self.logger.info("Skipping Bedrock connectivity test - model access needs to be enabled")
             
             self.logger.info("RiskAnalysisService initialization complete")
             
@@ -1065,11 +1065,12 @@ Data Quality: {context['market']['data_quality']}
             
             response = await asyncio.get_event_loop().run_in_executor(
                 None,
-                self.bedrock_client.invoke_model,
-                self.config.aws.bedrock_model_id,
-                json.dumps(test_body),
-                'application/json',
-                'application/json'
+                lambda: self.bedrock_client.invoke_model(
+                    modelId=self.config.aws.bedrock_model_id,
+                    body=json.dumps(test_body),
+                    contentType='application/json',
+                    accept='application/json'
+                )
             )
             
             if response['ResponseMetadata']['HTTPStatusCode'] == 200:

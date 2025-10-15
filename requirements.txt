@@ -61,6 +61,7 @@ yfinance==0.2.18
 # HTTP Client and API Tools
 httpx==0.26.0
 tenacity==8.2.3
+backoff==2.2.1
 
 # Configuration Management
 pyyaml==6.0.1
@@ -73,7 +74,7 @@ debugpy==1.8.0
 
 # Type Checking and Annotations
 typing-extensions==4.9.0
-types-requests==2.31.0.20240125
+# types-requests removed to avoid forcing urllib3>=2 which conflicts with alpaca-trade-api
 types-python-dateutil==2.8.19.20240106
 
 # Containerization Support
@@ -82,3 +83,9 @@ gevent==23.9.1
 
 # AWS Lambda Runtime
 awslambdaric==2.0.8
+
+# Alpaca Paper Trading API
+alpaca-trade-api==3.2.0
+
+# Resolve dependency conflicts
+urllib3==1.26.18

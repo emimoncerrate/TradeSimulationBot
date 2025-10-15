@@ -34,6 +34,7 @@ import structlog
 from config.settings import get_config
 from models.trade import Trade, TradeStatus
 from services.market_data import MarketQuote, get_market_data_service
+from services.alpaca_service import AlpacaService
 
 
 class TradingError(Exception):
@@ -479,7 +480,10 @@ class TradingAPIService:
         self.config = get_config()
         self.logger = structlog.get_logger(__name__)
         
-        # Initialize market simulator
+        # Initialize Alpaca service for real paper trading
+        self.alpaca_service = AlpacaService()
+        
+        # Initialize market simulator for fallback
         self.market_simulator = MarketSimulator()
         
         # Execution tracking
@@ -521,6 +525,18 @@ class TradingAPIService:
         self.logger.info("TradingAPIService initialized",
                         mock_execution=self.config.trading.mock_execution_enabled,
                         execution_delay=self.config.trading.execution_delay_seconds)
+    
+    async def initialize(self):
+        """Initialize the trading service and Alpaca connection."""
+        try:
+            await self.alpaca_service.initialize()
+            if self.alpaca_service.is_available():
+                self.logger.info("🚀 Alpaca Paper Trading connected - Real paper trades enabled!")
+            else:
+                self.logger.info("📝 Using mock trading simulation")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize Alpaca service: {e}")
+            self.logger.info("📝 Falling back to mock trading")
     
     async def execute_trade(
         self, 
@@ -576,23 +592,56 @@ class TradingAPIService:
             execution_report.execution_started_at = datetime.utcnow()
             execution_report.audit_trail.append(f"Execution started at {execution_report.execution_started_at}")
             
-            # Simulate execution delay
-            if self.config.trading.execution_delay_seconds > 0:
-                await asyncio.sleep(self.config.trading.execution_delay_seconds)
-            
-            # Simulate execution
-            fills, execution_metrics = self.market_simulator.simulate_execution(
-                trade.symbol,
-                trade.trade_type,
-                abs(trade.quantity),
-                market_quote,
-                order_type
-            )
-            
-            # Process fills
-            for fill in fills:
-                fill.order_id = execution_report.order_id
-                execution_report.add_fill(fill)
+            # Execute trade - use Alpaca if available, otherwise simulate
+            if self.alpaca_service.is_available():
+                # Real Alpaca Paper Trading execution
+                self.logger.info(f"🚀 Executing {trade.trade_type.value} order via Alpaca Paper Trading")
+                
+                alpaca_order = await self.alpaca_service.submit_order(
+                    symbol=trade.symbol,
+                    quantity=abs(trade.quantity),
+                    side='buy' if trade.trade_type.value.lower() == 'buy' else 'sell',
+                    order_type='market'  # Using market orders for simplicity
+                )
+                
+                if alpaca_order:
+                    # Create fill from Alpaca order
+                    fill = Fill(
+                        fill_id=str(uuid.uuid4()),
+                        order_id=execution_report.order_id,
+                        symbol=trade.symbol,
+                        quantity=abs(trade.quantity),
+                        price=Decimal(str(alpaca_order.get('filled_avg_price', market_quote.price))),
+                        timestamp=datetime.utcnow(),
+                        exchange='ALPACA_PAPER'
+                    )
+                    execution_report.add_fill(fill)
+                    execution_report.audit_trail.append(f"Alpaca order executed: {alpaca_order['order_id']}")
+                    self.logger.info(f"✅ Alpaca order executed successfully: {alpaca_order['order_id']}")
+                else:
+                    raise Exception("Alpaca order submission failed")
+                    
+            else:
+                # Fallback to simulation
+                self.logger.info(f"📝 Simulating {trade.trade_type.value} order execution")
+                
+                # Simulate execution delay
+                if self.config.trading.execution_delay_seconds > 0:
+                    await asyncio.sleep(self.config.trading.execution_delay_seconds)
+                
+                # Simulate execution
+                fills, execution_metrics = self.market_simulator.simulate_execution(
+                    trade.symbol,
+                    trade.trade_type,
+                    abs(trade.quantity),
+                    market_quote,
+                    order_type
+                )
+                
+                # Process fills
+                for fill in fills:
+                    fill.order_id = execution_report.order_id
+                    execution_report.add_fill(fill)
             
             # Update execution metrics
             execution_report.market_impact_bps = execution_metrics.get('market_impact_bps')
@@ -677,6 +726,155 @@ class TradingAPIService:
                             error=str(e))
             
             raise e
+    
+    async def execute_trade_with_portfolio_update(
+        self,
+        user_id: str,
+        symbol: str,
+        quantity: int,
+        trade_type: str,
+        order_type: OrderType = OrderType.MARKET,
+        channel_id: Optional[str] = None,
+        notes: Optional[str] = None
+    ) -> Tuple[Trade, Any, ExecutionReport]:
+        """
+        Complete trade execution orchestrator that handles the full workflow:
+        1. Fetch current market price
+        2. Create Trade object
+        3. Execute trade
+        4. Update portfolio
+        5. Save everything to database
+        
+        This is the main entry point for executing trades with portfolio management.
+        
+        Args:
+            user_id: User ID executing the trade
+            symbol: Stock symbol to trade
+            quantity: Number of shares (positive for buy, negative for sell)
+            trade_type: 'buy' or 'sell'
+            order_type: Type of order (market, limit, etc.)
+            channel_id: Optional Slack channel ID
+            notes: Optional trade notes
+            
+        Returns:
+            Tuple of (Trade, Portfolio, ExecutionReport)
+            
+        Raises:
+            TradingError: If any step of the process fails
+        """
+        from services.database import get_database_service
+        from models.trade import Trade, TradeType, TradeStatus, RiskLevel
+        
+        try:
+            self.logger.info("Starting trade execution with portfolio update",
+                           user_id=user_id,
+                           symbol=symbol,
+                           quantity=quantity,
+                           trade_type=trade_type)
+            
+            # Step 1: Get current market price
+            market_data_service = await get_market_data_service()
+            market_quote = await market_data_service.get_quote(symbol)
+            
+            if not market_quote or not market_quote.current_price:
+                raise TradingError(
+                    f"Unable to fetch market price for {symbol}",
+                    error_code="MARKET_DATA_UNAVAILABLE"
+                )
+            
+            current_price = market_quote.current_price
+            self.logger.info(f"Current market price for {symbol}: ${current_price}")
+            
+            # Step 2: Create Trade object
+            trade = Trade(
+                user_id=user_id,
+                symbol=symbol.upper(),
+                quantity=abs(quantity),  # Trade model expects positive quantity
+                trade_type=TradeType(trade_type.lower()),
+                price=current_price,
+                status=TradeStatus.PENDING,
+                risk_level=RiskLevel.LOW,
+                channel_id=channel_id,
+                notes=notes,
+                market_data={
+                    'quote': {
+                        'current_price': float(current_price),
+                        'open_price': float(market_quote.open_price) if market_quote.open_price else None,
+                        'high_price': float(market_quote.high_price) if market_quote.high_price else None,
+                        'low_price': float(market_quote.low_price) if market_quote.low_price else None,
+                        'volume': market_quote.volume,
+                        'timestamp': market_quote.timestamp.isoformat()
+                    }
+                }
+            )
+            
+            self.logger.info(f"Trade object created: {trade.trade_id}")
+            
+            # Step 3: Execute trade through trading system
+            execution_report = await self.execute_trade(trade, order_type=order_type)
+            
+            if not execution_report.is_complete:
+                raise TradingError(
+                    f"Trade execution incomplete: {execution_report.status.value}",
+                    trade_id=trade.trade_id,
+                    error_code="EXECUTION_INCOMPLETE"
+                )
+            
+            self.logger.info(f"Trade executed successfully: {execution_report.execution_id}")
+            
+            # Step 4: Get database service and portfolio
+            db_service = await get_database_service()
+            
+            # Get or create user's default portfolio
+            portfolio = await db_service.get_or_create_default_portfolio(user_id)
+            self.logger.info(f"Portfolio retrieved: {portfolio.portfolio_id}")
+            
+            # Step 5: Update portfolio with trade
+            # Convert quantity to signed integer (positive for buy, negative for sell)
+            signed_quantity = abs(quantity) if trade_type.lower() == 'buy' else -abs(quantity)
+            
+            # Use actual execution price from execution report
+            execution_price = execution_report.average_fill_price or current_price
+            commission = execution_report.total_commission
+            
+            updated_portfolio = await db_service.update_portfolio_position(
+                user_id=user_id,
+                portfolio_id=portfolio.portfolio_id,
+                symbol=symbol.upper(),
+                quantity=signed_quantity,
+                price=execution_price,
+                trade_id=trade.trade_id,
+                commission=commission
+            )
+            
+            self.logger.info(f"Portfolio updated successfully: {updated_portfolio.portfolio_id}")
+            
+            # Step 6: Save trade to database
+            saved_trade = await db_service.write_trade(trade)
+            self.logger.info(f"Trade saved to database: {saved_trade.trade_id}")
+            
+            # Step 7: Return results
+            self.logger.info("Trade execution with portfolio update completed successfully",
+                           trade_id=trade.trade_id,
+                           execution_id=execution_report.execution_id,
+                           portfolio_id=updated_portfolio.portfolio_id,
+                           portfolio_value=float(updated_portfolio.total_value),
+                           portfolio_pnl=float(updated_portfolio.total_pnl))
+            
+            return saved_trade, updated_portfolio, execution_report
+            
+        except TradingError:
+            # Re-raise trading errors as-is
+            raise
+        except Exception as e:
+            # Wrap other exceptions in TradingError
+            error_msg = f"Trade execution with portfolio update failed: {str(e)}"
+            self.logger.error(error_msg, 
+                            user_id=user_id,
+                            symbol=symbol,
+                            quantity=quantity,
+                            error=str(e))
+            raise TradingError(error_msg, error_code="EXECUTION_FAILED")
     
     async def cancel_order(self, order_id: str) -> bool:
         """
