@@ -487,9 +487,14 @@ class TradingAPIService:
         # Alpaca service reference (initialized lazily)
         self.alpaca_service: Optional[Any] = None
         
-        # Initialize Alpaca if enabled
+        # Initialize Alpaca if enabled (only if event loop is running)
         if self.config.trading.use_real_trading and self.config.alpaca.enabled:
-            asyncio.create_task(self._init_alpaca_service())
+            try:
+                # Try to schedule initialization if event loop is running
+                asyncio.create_task(self._init_alpaca_service())
+            except RuntimeError:
+                # No event loop running yet - will initialize lazily on first trade
+                self.logger.debug("Event loop not running, will initialize Alpaca service lazily")
         
         # Execution tracking
         self.active_orders: Dict[str, ExecutionReport] = {}
@@ -566,27 +571,33 @@ class TradingAPIService:
             Exception: If execution fails
         """
         # Route to real or mock trading based on configuration
-        if self.config.trading.use_real_trading and self.alpaca_service:
-            self.logger.info(
-                "Routing to REAL trade execution via Alpaca",
-                trade_id=trade.trade_id,
-                symbol=trade.symbol,
-                quantity=trade.quantity
-            )
-            return await self.alpaca_service.execute_trade(trade)
-        else:
-            if self.config.trading.use_real_trading:
+        if self.config.trading.use_real_trading:
+            # Initialize Alpaca service lazily if not already done
+            if self.alpaca_service is None and self.config.alpaca.enabled:
+                await self._init_alpaca_service()
+            
+            if self.alpaca_service:
+                self.logger.info(
+                    "Routing to REAL trade execution via Alpaca",
+                    trade_id=trade.trade_id,
+                    symbol=trade.symbol,
+                    quantity=trade.quantity
+                )
+                return await self.alpaca_service.execute_trade(trade)
+            else:
                 self.logger.warning(
                     "Real trading requested but Alpaca service not available, falling back to mock",
                     trade_id=trade.trade_id
                 )
-            self.logger.info(
-                "Routing to MOCK trade execution (simulation)",
-                trade_id=trade.trade_id,
-                symbol=trade.symbol,
-                quantity=trade.quantity
-            )
-            return await self._execute_mock_trade(trade, order_type, timeout_seconds)
+        
+        # Use mock execution (fallback)
+        self.logger.info(
+            "Routing to MOCK trade execution (simulation)",
+            trade_id=trade.trade_id,
+            symbol=trade.symbol,
+            quantity=trade.quantity
+        )
+        return await self._execute_mock_trade(trade, order_type, timeout_seconds)
     
     async def _execute_mock_trade(
         self, 
