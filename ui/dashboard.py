@@ -868,46 +868,35 @@ class Dashboard:
         })
         
         # Toggle buttons for preferences
-        preference_buttons = []
-        
-        # Charts toggle button
-        charts_button = {
-            "type": "button",
-            "text": {
-                "type": "plain_text",
-                "text": f"📊 Charts: {'On' if context.show_charts else 'Off'}"
+        preference_buttons = [
+            {
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"📊 Charts: {'On' if context.show_charts else 'Off'}"
+                },
+                "action_id": "toggle_charts",
+                "style": "primary" if context.show_charts else None
             },
-            "action_id": "toggle_charts"
-        }
-        if context.show_charts:
-            charts_button["style"] = "primary"
-        preference_buttons.append(charts_button)
-        
-        # Risk metrics toggle button
-        risk_button = {
-            "type": "button",
-            "text": {
-                "type": "plain_text",
-                "text": f"🔍 Risk Metrics: {'On' if context.show_risk_metrics else 'Off'}"
+            {
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"🔍 Risk Metrics: {'On' if context.show_risk_metrics else 'Off'}"
+                },
+                "action_id": "toggle_risk_metrics",
+                "style": "primary" if context.show_risk_metrics else None
             },
-            "action_id": "toggle_risk_metrics"
-        }
-        if context.show_risk_metrics:
-            risk_button["style"] = "primary"
-        preference_buttons.append(risk_button)
-        
-        # Compact view toggle button
-        compact_button = {
-            "type": "button",
-            "text": {
-                "type": "plain_text",
-                "text": f"📱 Compact View: {'On' if context.compact_view else 'Off'}"
-            },
-            "action_id": "toggle_compact_view"
-        }
-        if context.compact_view:
-            compact_button["style"] = "primary"
-        preference_buttons.append(compact_button)
+            {
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"📱 Compact View: {'On' if context.compact_view else 'Off'}"
+                },
+                "action_id": "toggle_compact_view",
+                "style": "primary" if context.compact_view else None
+            }
+        ]
         
         blocks.append({
             "type": "actions",

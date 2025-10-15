@@ -86,7 +86,7 @@ class AWSConfig:
             dynamodb.list_tables()
             
             # Test Bedrock access
-            bedrock = boto3.client('bedrock', region_name=self.region)
+            bedrock = boto3.client('bedrock-runtime', region_name=self.region)
             bedrock.list_foundation_models()
             
             return True
@@ -402,13 +402,13 @@ class ConfigurationManager:
         """
         value = os.getenv(key)
         if not value:
-            # In development mode, provide mock values for required keys ONLY if not set
+            # In development mode, provide mock values for required keys
             env_name = os.getenv('ENVIRONMENT', 'development').lower()
             if env_name == 'development':
                 mock_values = {
                     'SLACK_BOT_TOKEN': 'xoxb-mock-development-token',
-                    'SLACK_SIGNING_SECRET': 'mock-development-signing-secret-32chars'
-                    # Removed FINNHUB_API_KEY from mock values - it should be real
+                    'SLACK_SIGNING_SECRET': 'mock-development-signing-secret-32chars',
+                    'FINNHUB_API_KEY': 'mock-development-api-key'
                 }
                 if key in mock_values:
                     return mock_values[key]
@@ -440,7 +440,7 @@ class ConfigurationManager:
         try:
             # Validate AWS credentials and permissions (skip in development with mock credentials)
             if not (self._config.environment.value == 'development' and 
-                   os.getenv('AWS_ACCESS_KEY_ID') in ['mock-access-key-id', 'local']):
+                   os.getenv('AWS_ACCESS_KEY_ID') == 'mock-access-key-id'):
                 if not self._config.aws.validate_aws_credentials():
                     logging.error("AWS credentials validation failed")
                     return False
