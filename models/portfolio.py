@@ -369,6 +369,10 @@ class Position:
             if 'position_type' in data and isinstance(data['position_type'], str):
                 data['position_type'] = PositionType(data['position_type'])
             
+            # Convert quantity to int if it's a string
+            if 'quantity' in data and data['quantity'] is not None:
+                data['quantity'] = int(data['quantity'])
+            
             # Convert Decimal fields back
             decimal_fields = ['average_cost', 'current_price', 'realized_pnl', 'unrealized_pnl',
                              'total_cost', 'current_value', 'day_change', 'day_change_percent',

@@ -481,7 +481,7 @@ class AuthService:
                 await self._update_user_from_slack_info(user, slack_user_info)
                 
                 # Check if specific users need role updates
-                if slack_user_id in ['U08GVND66H4', 'U08GVNAPX3Q'] and user.role != UserRole.EXECUTION_TRADER:
+                if slack_user_id in ['U08GVND66H4', 'U08GVNAPX3Q', 'U08GVNDCQ14', 'U08GVN46BRC', 'U08GVNF3LLE'] and user.role != UserRole.EXECUTION_TRADER:
                     logger.info(f"Updating role for user {slack_user_id} from {user.role.value} to execution_trader")
                     user.role = UserRole.EXECUTION_TRADER
                     # Update permissions for the new role
@@ -583,7 +583,8 @@ class AuthService:
         title = profile.get('title', '').lower()
         
         # Specific user overrides for trading access
-        if slack_user_id in ['U08GVND66H4', 'U08GVNAPX3Q']:
+        user_id = slack_user_info.get('id', '')
+        if user_id in ['U08GVND66H4', 'U08GVNAPX3Q', 'U08GVNDCQ14', 'U08GVN46BRC', 'U08GVNF3LLE']:
             return UserRole.EXECUTION_TRADER
         
         # Role determination logic based on title/department

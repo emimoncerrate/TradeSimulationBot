@@ -1,0 +1,50 @@
+{
+  "U08GVND66H4": {
+    "user_id": "U08GVND66H4",
+    "account_id": "primary",
+    "assigned_at": "2025-10-16T22:54:40.933451+00:00",
+    "assigned_by": "admin_script",
+    "assignment_reason": "final_assignment_to_primary",
+    "is_active": true
+  },
+  "U08GVN6F4FQ": {
+    "user_id": "U08GVN6F4FQ",
+    "account_id": "primary",
+    "assigned_at": "2025-10-16T22:54:40.934391+00:00",
+    "assigned_by": "admin_script",
+    "assignment_reason": "final_assignment_to_primary",
+    "is_active": true
+  },
+  "U08GVN8R7M4": {
+    "user_id": "U08GVN8R7M4",
+    "account_id": "account_1",
+    "assigned_at": "2025-10-16T22:54:40.935202+00:00",
+    "assigned_by": "admin_script",
+    "assignment_reason": "final_assignment_to_account_1",
+    "is_active": true
+  },
+  "U08GVNAPX3Q": {
+    "user_id": "U08GVNAPX3Q",
+    "account_id": "account_1",
+    "assigned_at": "2025-10-16T22:54:40.935880+00:00",
+    "assigned_by": "admin_script",
+    "assignment_reason": "final_assignment_to_account_1",
+    "is_active": true
+  },
+  "U08GVNDCQ14": {
+    "user_id": "U08GVNDCQ14",
+    "account_id": "account_1",
+    "assigned_at": "2025-10-16T22:54:40.936429+00:00",
+    "assigned_by": "admin_script",
+    "assignment_reason": "final_assignment_to_account_1",
+    "is_active": true
+  },
+  "U08GVN46BRC": {
+    "user_id": "U08GVN46BRC",
+    "account_id": "account_1",
+    "assigned_at": "2025-10-16T22:54:40.936936+00:00",
+    "assigned_by": "admin_script",
+    "assignment_reason": "final_assignment_to_account_1",
+    "is_active": true
+  }
+}

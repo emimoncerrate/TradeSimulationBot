@@ -485,6 +485,9 @@ class CommandHandler:
             parameters = self._parse_trade_parameters(command_context.command_text)
             command_context.parameters = parameters
             
+            print(f"🔍 TRADE PARAMS DEBUG: Command text: '{command_context.command_text}'")
+            print(f"🔍 TRADE PARAMS DEBUG: Parsed parameters: {parameters}")
+            
             # Import interactive components
             from ui.interactive_trade_widget import InteractiveTradeWidget, InteractiveTradeContext
             
@@ -504,8 +507,12 @@ class CommandHandler:
             # Pre-populate with parsed parameters if available
             if parameters.get('quantity'):
                 interactive_context.shares = parameters['quantity']
+                print(f"🔍 TRADE PARAMS DEBUG: Set shares to {parameters['quantity']}")
             if parameters.get('trade_type'):
                 interactive_context.trade_side = "buy" if parameters['trade_type'].value == "buy" else "sell"
+                print(f"🔍 TRADE PARAMS DEBUG: Set trade_side to {interactive_context.trade_side}")
+            
+            print(f"🔍 TRADE PARAMS DEBUG: Final context - Symbol: {interactive_context.symbol}, Shares: {interactive_context.shares}, Side: {interactive_context.trside}")
             
             # Fetch market data for the symbol
             try:
@@ -554,7 +561,7 @@ class CommandHandler:
                 raise
     
     async def _handle_portfolio_command(self, command_context: CommandContext, client: WebClient) -> None:
-        """Handle /portfolio command to show portfolio dashboard."""
+        """Handle /portfolio command to show current positions and portfolio summary."""
         try:
             # Validate user has portfolio viewing permissions
             if not command_context.user.has_permission(Permission.VIEW_PORTFOLIO):
@@ -563,22 +570,92 @@ class CommandHandler:
                     Permission.VIEW_PORTFOLIO.value
                 )
             
-            # Send message directing user to App Home
+            # Debug print statements
+            print(f"🔍 PORTFOLIO DEBUG: Getting positions for user: {command_context.user.user_id}")
+            
+            # Get user positions from database
+            positions = await self.db_service.get_user_positions(command_context.user.user_id)
+            
+            print(f"🔍 PORTFOLIO DEBUG: Retrieved {len(positions)} positions")
+            for i, pos in enumerate(positions):
+                print(f"🔍 PORTFOLIO DEBUG: Position {i+1}: {pos.symbol} - {pos.quantity} shares @ ${pos.current_price}")
+                print(f"🔍 PORTFOLIO DEBUG: Position {i+1} details: avg_cost=${pos.average_cost}, market_value=${float(pos.quantity) * float(pos.current_price):.2f}")
+            
+            if positions:
+                # Build portfolio summary
+                portfolio_text = "📊 *Your Portfolio*\n\n"
+                total_value = 0
+                total_cost = 0
+                
+                print(f"🔍 PORTFOLIO DEBUG: Building portfolio text for {len(positions)} positions")
+                
+                for pos in positions:
+                    current_value = float(pos.quantity) * float(pos.current_price)
+                    position_cost = float(pos.quantity) * float(pos.average_cost)
+                    pnl = current_value - position_cost
+                    pnl_percent = (pnl / position_cost * 100) if position_cost > 0 else 0
+                    
+                    total_value += current_value
+                    total_cost += position_cost
+                    
+                    print(f"🔍 PORTFOLIO DEBUG: Processing {pos.symbol}: {pos.quantity} shares, current_value=${current_value:.2f}, pnl=${pnl:.2f}")
+                    
+                    # Format P&L with color indicators
+                    pnl_indicator = "🟢" if pnl >= 0 else "🔴"
+                    pnl_sign = "+" if pnl >= 0 else ""
+                    
+                    portfolio_text += (
+                        f"*{pos.symbol}*\n"
+                        f"• Shares: {pos.quantity:,}\n"
+                        f"• Current Price: ${pos.current_price:.2f}\n"
+                        f"• Avg Cost: ${pos.average_cost:.2f}\n"
+                        f"• Market Value: ${current_value:,.2f}\n"
+                        f"• P&L: {pnl_indicator} {pnl_sign}${pnl:.2f} ({pnl_sign}{pnl_percent:.1f}%)\n\n"
+                    )
+                
+                # Add portfolio totals
+                total_pnl = total_value - total_cost
+                total_pnl_percent = (total_pnl / total_cost * 100) if total_cost > 0 else 0
+                total_pnl_indicator = "🟢" if total_pnl >= 0 else "🔴"
+                total_pnl_sign = "+" if total_pnl >= 0 else ""
+                
+                portfolio_text += (
+                    f"*Portfolio Summary*\n"
+                    f"• Total Market Value: ${total_value:,.2f}\n"
+                    f"• Total Cost Basis: ${total_cost:,.2f}\n"
+                    f"• Total P&L: {total_pnl_indicator} {total_pnl_sign}${total_pnl:.2f} ({total_pnl_sign}{total_pnl_percent:.1f}%)\n\n"
+                    f"📈 *App Home* tab has detailed charts and trade history."
+                )
+                
+                print(f"🔍 PORTFOLIO DEBUG: Final portfolio text length: {len(portfolio_text)} characters")
+                print(f"🔍 PORTFOLIO DEBUG: Total positions processed: {len(positions)}")
+                print(f"🔍 PORTFOLIO DEBUG: Total value: ${total_value:.2f}")
+            else:
+                portfolio_text = (
+                    "📊 *Your Portfolio*\n\n"
+                    "You don't have any positions yet.\n\n"
+                    "💡 *Get Started:*\n"
+                    "• Use `/trade AAPL` to make your first trade\n"
+                    "• Try `/trade TSLA` for Tesla\n"
+                    "• Use `/trade MSFT` for Microsoft\n\n"
+                    "📈 Check the *App Home* tab for detailed portfolio analytics."
+                )
+            
+            # Send portfolio information
             await asyncio.to_thread(
                 client.chat_postEphemeral,
                 channel=command_context.channel_id,
                 user=command_context.slack_user_id,
-                text="📊 *Portfolio Dashboard*\n\n"
-                     "Your portfolio information is available in the *App Home* tab. "
-                     "Click on the bot name in the sidebar or search for 'Jain Global Trading Bot' "
-                     "to access your personalized dashboard with positions, P&L, and trade history."
+                text=portfolio_text
             )
             
             logger.info(
-                f"Portfolio command processed | User: {command_context.user.user_id}"
+                f"Portfolio command processed | User: {command_context.user.user_id} | "
+                f"Positions: {len(positions)} | Total Value: ${total_value:,.2f}" if positions else "No positions"
             )
             
         except Exception as e:
+            print(f"🚨 PORTFOLIO COMMAND ERROR: {e}")
             logger.error(f"Error handling portfolio command: {str(e)}")
             raise
     
@@ -856,50 +933,158 @@ def register_command_handlers(app: App, service_container: Optional['ServiceCont
     # Create command handler for non-trade commands
     command_handler = CommandHandler(auth_service, database_service)
     
-    # ========================================
-    # REGULAR /TRADE COMMAND WITH PRE-FILLED FORM
-    # ========================================
-    
-    # Register the regular trade command that shows the proper Block Kit form
-    @app.command("/trade")
-    def handle_trade_command(ack, body, client, context):
-        """Handle the /trade slash command with pre-filled form."""
-        ack()  # Acknowledge immediately
+    # Check if multi-account system is available
+    multi_account_available = False
+    try:
+        # Check if multi-account services can be imported
+        from services.multi_alpaca_service import MultiAlpacaService
+        from services.user_account_manager import UserAccountManager
         
-        # Run the async command in a thread
-        import threading
-        import asyncio
-        
-        def run_async_command():
-            try:
-                # Create new event loop for this thread
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+        # Try to get the services from container
+        try:
+            multi_alpaca = container.get(MultiAlpacaService)
+            user_manager = container.get(UserAccountManager)
+            
+            # Check if the multi-alpaca service is available
+            if multi_alpaca.is_available():
+                multi_account_available = True
+                logger.info("🏦 Multi-account system detected and available")
+            else:
+                logger.info("📊 Multi-account services loaded but no accounts available")
                 
-                # Run the async command
-                loop.run_until_complete(
-                    command_handler.process_command(
-                        CommandType.TRADE, body, client, ack, context
+        except Exception as service_error:
+            logger.info(f"📋 Multi-account services not in container: {service_error}")
+            
+    except ImportError as import_error:
+        logger.info(f"📦 Multi-account modules not available: {import_error}")
+    except Exception as e:
+        logger.warning(f"❌ Error checking multi-account system: {e}")
+    
+    # Register appropriate command based on availability
+    if multi_account_available:
+        try:
+            # Register multi-account trade command
+            from listeners.multi_account_trade_command import register_multi_account_trade_command
+            from commands.account_management import register_account_management_commands
+            
+            logger.info("🚀 Registering multi-account trade commands")
+            
+            # Register multi-account trade command (replaces regular trade command)
+            register_multi_account_trade_command(app, auth_service)
+            
+            # Register account management commands
+            register_account_management_commands(app)
+            
+            logger.info("✅ Multi-account commands registered successfully")
+            return  # Skip regular trade command registration
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to register multi-account commands: {e}")
+            logger.error(f"❌ CRITICAL: Multi-account system failed to initialize!")
+            logger.error(f"❌ No trade command will be available!")
+            # Don't register any fallback - force multi-account system to work
+    
+    # Add a simple positions command
+    @app.command("/positions")
+    def handle_positions_command(ack, body, client, context):
+        """Quick positions check command."""
+        ack()
+        print("📊 POSITIONS COMMAND CALLED!")
+        
+        try:
+            # Get user positions using asyncio
+            import asyncio
+            
+            async def get_positions():
+                try:
+                    # Get user from auth service
+                    user, session = await command_handler.auth_service.authenticate_slack_user(
+                        body.get('user_id'),
+                        body.get('team_id'),
+                        body.get('channel_id')
                     )
-                )
-            except Exception as e:
-                logger.error(f"Trade command error: {e}")
+                    
+                    # Get positions from database
+                    positions = await command_handler.db_service.get_user_positions(user.user_id)
+                    
+                    if positions:
+                        position_text = "📊 *Your Current Positions:*\n\n"
+                        total_value = 0
+                        
+                        for pos in positions:
+                            current_value = float(pos.quantity) * float(pos.current_price)
+                            total_value += current_value
+                            
+                            position_text += (
+                                f"• *{pos.symbol}*: {pos.quantity} shares\n"
+                                f"  Price: ${pos.current_price:.2f} | "
+                                f"Value: ${current_value:,.2f}\n\n"
+                            )
+                        
+                        position_text += f"*Total Portfolio Value: ${total_value:,.2f}*"
+                    else:
+                        position_text = "📊 You don't have any positions yet.\n\nUse `/trade AAPL` to make your first trade!"
+                    
+                    return position_text
+                    
+                except Exception as e:
+                    return f"❌ Error getting positions: {str(e)}"
+            
+            # Run async function
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(get_positions())
             finally:
                 loop.close()
-        
-        # Start the async command in a separate thread
-        thread = threading.Thread(target=run_async_command)
-        thread.start()
+            
+            client.chat_postEphemeral(
+                channel=body.get('channel_id'),
+                user=body.get('user_id'),
+                text=result
+            )
+            
+        except Exception as e:
+            print(f"Error in positions command: {e}")
+            client.chat_postEphemeral(
+                channel=body.get('channel_id'),
+                user=body.get('user_id'),
+                text="❌ Error checking positions. Please try again."
+            )
     
-    logger.info("✅ Enhanced /trade command registered successfully")
-    logger.info("🎯 Features: interactive modal, real-time GMV↔Shares calculations, multiple order types, live price updates")
+    # Old trade command registration removed - now using multi-account system only
     
     @app.command("/portfolio")
-    async def handle_portfolio_command(ack, body, client, context):
+    def handle_portfolio_command(ack, body, client, context):
         """Handle the /portfolio slash command."""
-        await command_handler.process_command(
-            CommandType.PORTFOLIO, body, client, ack, context
-        )
+        ack()
+        print("📊 PORTFOLIO COMMAND CALLED!")
+        
+        try:
+            # Process the command using asyncio
+            import asyncio
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(
+                    command_handler.process_command(
+                        CommandType.PORTFOLIO, body, client, ack, context
+                    )
+                )
+            finally:
+                loop.close()
+                
+        except Exception as e:
+            logger.error(f"Portfolio command error: {e}")
+            try:
+                client.chat_postEphemeral(
+                    channel=body.get('channel_id'),
+                    user=body.get('user_id'),
+                    text=f"❌ Portfolio command failed: {str(e)}"
+                )
+            except Exception:
+                pass
     
     @app.command("/help")
     async def handle_help_command(ack, body, client, context):

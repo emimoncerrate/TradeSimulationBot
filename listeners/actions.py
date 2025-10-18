@@ -642,28 +642,30 @@ class ActionHandler:
             submitting_modal = self.trade_widget.create_trade_modal(widget_context)
             await self._update_modal(client, action_context.view_id, submitting_modal)
             
-            # Log trade to database
+            # Log trade to database first
             await self.db_service.log_trade(trade)
             
-            # Submit trade to trading API
-            execution_result = await self.trading_api_service.execute_trade(trade)
+            # Execute trade with enhanced Alpaca integration
+            execution_result = await self._execute_trade_with_alpaca(trade)
             
             # Update trade status based on execution result
             if execution_result.success:
                 trade.status = TradeStatus.EXECUTED
                 trade.execution_id = execution_result.execution_id
+                trade.execution_price = execution_result.execution_price
+                trade.execution_timestamp = execution_result.execution_timestamp
                 
                 # Update position
                 await self.db_service.update_position(
                     trade.user_id,
                     trade.symbol,
                     trade.quantity if trade.trade_type == TradeType.BUY else -trade.quantity,
-                    trade.price,
+                    execution_result.execution_price or trade.price,
                     trade.trade_id
                 )
                 
-                # Send success notification
-                await self._send_trade_success_notification(client, action_context, trade, execution_result)
+                # Send success notification with execution details
+                await self._send_trade_success_notification_with_details(client, action_context, trade, execution_result)
                 
             else:
                 trade.status = TradeStatus.FAILED
@@ -671,7 +673,7 @@ class ActionHandler:
                 # Send failure notification
                 await self._send_trade_failure_notification(client, action_context, trade, execution_result.error_message)
             
-            # Update trade in database
+            # Update trade in database with execution details
             await self.db_service.update_trade_status(
                 trade.user_id,
                 trade.trade_id,
@@ -680,6 +682,9 @@ class ActionHandler:
                     'execution_id': execution_result.execution_id,
                     'execution_price': str(execution_result.execution_price) if execution_result.execution_price else None,
                     'execution_timestamp': execution_result.execution_timestamp.isoformat() if execution_result.execution_timestamp else None,
+                    'alpaca_order_id': getattr(execution_result, 'alpaca_order_id', None),
+                    'execution_time_ms': getattr(execution_result, 'execution_time_ms', None),
+                    'slippage_bps': getattr(execution_result, 'slippage_bps', None),
                     'error_message': execution_result.error_message
                 }
             )
@@ -688,16 +693,25 @@ class ActionHandler:
             await self._close_modal(client, action_context.view_id)
             
             logger.info(
-                "Trade submitted successfully",
-                user_id=action_context.user.user_id,
-                trade_id=trade.trade_id,
-                status=trade.status.value,
-                execution_id=execution_result.execution_id
+                f"Trade execution completed | "
+                f"Trade ID: {trade.trade_id} | "
+                f"Success: {execution_result.success} | "
+                f"Execution ID: {execution_result.execution_id} | "
+                f"Alpaca Order: {getattr(execution_result, 'alpaca_order_id', 'N/A')}"
             )
             
         except ValidationError as e:
             raise ActionValidationError(str(e), "VALIDATION_FAILED")
-        except TradingError:
+        except Exception as e:
+            logger.error(f"Trade execution failed: {str(e)}", exc_info=True)
+            
+            # Close modal and send error notification
+            try:
+                await self._close_modal(client, action_context.view_id)
+            except Exception:
+                pass
+            
+            raise ActionProcessingError(f"Trade execution failed: {str(e)}", "EXECUTION_FAILED")
             # Re-raise trading errors
             raise
         except Exception as e:
@@ -975,6 +989,163 @@ class ActionHandler:
             
         except Exception as e:
             logger.error(f"Failed to send failure notification: {str(e)}")
+    
+    async def _execute_trade_with_alpaca(self, trade: Trade):
+        """Execute trade with enhanced Alpaca integration and fallback to existing system."""
+        from services.service_container import get_alpaca_service
+        
+        start_time = datetime.now(timezone.utc)
+        
+        # Create execution result object
+        class ExecutionResult:
+            def __init__(self):
+                self.success = False
+                self.execution_id = str(uuid.uuid4())
+                self.execution_price = None
+                self.execution_timestamp = None
+                self.alpaca_order_id = None
+                self.execution_time_ms = None
+                self.slippage_bps = None
+                self.error_message = None
+        
+        result = ExecutionResult()
+        
+        try:
+            # Get Alpaca service
+            alpaca_service = get_alpaca_service()
+            
+            # Get current market data for execution price reference
+            market_quote = await self.market_data_service.get_quote(trade.symbol)
+            
+            # Try Alpaca execution first if available
+            if alpaca_service and alpaca_service.is_available():
+                logger.info(f"🚀 Executing trade via Alpaca Paper Trading | Trade ID: {trade.trade_id}")
+                
+                # Submit order to Alpaca
+                alpaca_order = await alpaca_service.submit_order(
+                    symbol=trade.symbol,
+                    quantity=abs(trade.quantity),
+                    side='buy' if trade.trade_type == TradeType.BUY else 'sell',
+                    order_type='market',
+                    time_in_force='day'
+                )
+                
+                if alpaca_order and alpaca_order.get('order_id'):
+                    # Wait for order to be filled (with timeout)
+                    filled_order = await self._wait_for_alpaca_fill(alpaca_service, alpaca_order['order_id'])
+                    
+                    if filled_order and filled_order.get('status') in ['filled', 'partially_filled']:
+                        # Successful Alpaca execution
+                        result.success = True
+                        result.execution_price = Decimal(str(filled_order.get('filled_avg_price', market_quote.current_price)))
+                        result.execution_timestamp = datetime.now(timezone.utc)
+                        result.alpaca_order_id = alpaca_order['order_id']
+                        
+                        # Calculate slippage
+                        market_price = market_quote.current_price
+                        if trade.trade_type == TradeType.BUY:
+                            slippage = (result.execution_price - market_price) / market_price
+                        else:
+                            slippage = (market_price - result.execution_price) / market_price
+                        result.slippage_bps = float(slippage * 10000)
+                        
+                        logger.info(f"✅ Alpaca execution successful | Order ID: {result.alpaca_order_id} | Price: ${result.execution_price}")
+                    else:
+                        raise Exception("Alpaca order was not filled within timeout period")
+                else:
+                    raise Exception("Alpaca order submission failed")
+            
+            else:
+                # Fallback to existing trading API service
+                logger.info(f"📝 Using existing trading API service | Trade ID: {trade.trade_id}")
+                execution_report = await self.trading_api_service.execute_trade(trade)
+                
+                result.success = execution_report.success
+                result.execution_price = execution_report.execution_price
+                result.execution_timestamp = execution_report.execution_timestamp
+                result.error_message = execution_report.error_message
+                
+                # Add simulation indicator
+                result.alpaca_order_id = None  # Indicates simulation
+        
+        except Exception as e:
+            logger.error(f"Trade execution failed: {str(e)}")
+            result.success = False
+            result.error_message = str(e)
+        
+        # Calculate execution time
+        end_time = datetime.now(timezone.utc)
+        result.execution_time_ms = (end_time - start_time).total_seconds() * 1000
+        
+        return result
+    
+    async def _wait_for_alpaca_fill(self, alpaca_service, order_id: str, timeout_seconds: int = 30):
+        """Wait for Alpaca order to be filled."""
+        import asyncio
+        
+        start_time = datetime.now(timezone.utc)
+        
+        while (datetime.now(timezone.utc) - start_time).total_seconds() < timeout_seconds:
+            try:
+                order_status = await alpaca_service.get_order(order_id)
+                
+                if order_status and order_status.get('status') in ['filled', 'partially_filled']:
+                    return order_status
+                
+                # Wait before checking again
+                await asyncio.sleep(1)
+                
+            except Exception as e:
+                logger.warning(f"Error checking order status: {e}")
+                await asyncio.sleep(1)
+        
+        logger.warning(f"Order {order_id} was not filled within {timeout_seconds} seconds")
+        return None
+    
+    async def _send_trade_success_notification_with_details(self, client: WebClient, action_context: ActionContext,
+                                                          trade: Trade, execution_result) -> None:
+        """Send enhanced success notification with execution details."""
+        try:
+            # Determine execution method
+            if execution_result.alpaca_order_id:
+                execution_method = "🧪 Alpaca Paper Trading"
+                method_details = f"*Alpaca Order ID:* `{execution_result.alpaca_order_id}`"
+            else:
+                execution_method = "🎯 Simulation"
+                method_details = "*Method:* Simulated execution"
+            
+            # Format execution details
+            execution_details = [method_details]
+            if execution_result.execution_price:
+                execution_details.append(f"*Execution Price:* ${execution_result.execution_price}")
+            if execution_result.execution_time_ms:
+                execution_details.append(f"*Execution Time:* {execution_result.execution_time_ms:.1f}ms")
+            if execution_result.slippage_bps is not None:
+                execution_details.append(f"*Slippage:* {execution_result.slippage_bps:.2f} bps")
+            
+            success_message = (
+                f"✅ *Trade Executed Successfully*\n\n"
+                f"*Trade Details:*\n"
+                f"• *Symbol:* {trade.symbol}\n"
+                f"• *Type:* {trade.trade_type.value.upper()}\n"
+                f"• *Quantity:* {abs(trade.quantity):,} shares\n"
+                f"• *Trade ID:* `{trade.trade_id}`\n\n"
+                f"*Execution Details:*\n"
+                f"• *Method:* {execution_method}\n"
+                + "\n".join(f"• {detail}" for detail in execution_details) + "\n\n"
+                f"📊 Check your portfolio in the *App Home* tab for updated positions."
+            )
+            
+            await client.chat_postMessage(
+                channel=action_context.channel_id,
+                text=success_message,
+                thread_ts=getattr(action_context, 'thread_ts', None)
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to send enhanced success notification: {e}")
+            # Fallback to original notification
+            await self._send_trade_success_notification(client, action_context, trade, execution_result)
     
     async def _send_error_response(self, client: WebClient, action_context: Optional[ActionContext],
                                  message: str) -> None:

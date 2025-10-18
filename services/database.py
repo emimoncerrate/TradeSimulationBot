@@ -452,12 +452,15 @@ class DatabaseService:
             details: Additional event details
         """
         try:
+            # Convert any float values in details to Decimal for DynamoDB compatibility
+            cleaned_details = self._convert_floats_to_decimals(details)
+            
             audit_entry = {
                 'audit_id': str(uuid.uuid4()),
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'event_type': event_type,
                 'user_id': user_id,
-                'details': details,
+                'details': cleaned_details,
                 'ttl': int((datetime.now(timezone.utc) + timedelta(days=2555)).timestamp())  # 7 years retention
             }
             
@@ -472,6 +475,17 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Failed to log audit event: {str(e)}")
             # Don't raise exception for audit logging failures
+    
+    def _convert_floats_to_decimals(self, data: Any) -> Any:
+        """Convert float values to Decimal for DynamoDB compatibility."""
+        if isinstance(data, dict):
+            return {k: self._convert_floats_to_decimals(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._convert_floats_to_decimals(item) for item in data]
+        elif isinstance(data, float):
+            return Decimal(str(data))
+        else:
+            return data
     
     async def _store_audit_entry(self, audit_entry: Dict[str, Any]) -> None:
         """Store audit entry in database."""
@@ -793,31 +807,44 @@ class DatabaseService:
             table = self._get_table(self.positions_table_name)
             response = await self._execute_with_retry(
                 table.query,
-                KeyConditionExpression='pk = :pk',
-                ExpressionAttributeValues={':pk': f"USER#{user_id}"}
+                KeyConditionExpression='user_id = :user_id',
+                ExpressionAttributeValues={':user_id': user_id}
             )
             
+            print(f"🔍 DB DEBUG: DynamoDB query returned {len(response.get('Items', []))} items for user {user_id}")
+            
             positions = []
-            for item in response.get('Items', []):
+            for i, item in enumerate(response.get('Items', [])):
+                print(f"🔍 DB DEBUG: Raw item {i+1}: {item.get('symbol', 'NO_SYMBOL')} - keys: {list(item.keys())}")
+                
                 # Remove DynamoDB specific fields
                 for key in ['pk', 'sk', 'ttl']:
                     item.pop(key, None)
                 
                 try:
                     position = Position.from_dict(item)
+                    print(f"🔍 DB DEBUG: Successfully parsed position: {position.symbol} - {position.quantity} shares")
                     
                     # Filter active positions if requested
                     if active_only and position.is_closed():
+                        print(f"🔍 DB DEBUG: Skipping closed position: {position.symbol}")
                         continue
                     
                     positions.append(position)
+                    print(f"🔍 DB DEBUG: Added position to list: {position.symbol}")
                 except Exception as e:
+                    print(f"🔍 DB DEBUG: Failed to parse position data: {str(e)}")
+                    print(f"🔍 DB DEBUG: Item data: {item}")
                     logger.warning(f"Failed to parse position data: {str(e)}")
                     continue
             
             # Cache the results
             position_data_list = [pos.to_dict() for pos in positions]
             self._set_cache(cache_key, position_data_list)
+            
+            print(f"🔍 DB DEBUG: Final result - returning {len(positions)} positions for user {user_id}")
+            for pos in positions:
+                print(f"🔍 DB DEBUG: Final position: {pos.symbol} - {pos.quantity} shares @ ${pos.current_price}")
             
             logger.info(f"Retrieved {len(positions)} positions for user {user_id}")
             return positions
@@ -843,27 +870,71 @@ class DatabaseService:
             True if successful
         """
         try:
+            # Check if we're in mock mode
+            if hasattr(self, 'is_mock_mode') and self.is_mock_mode:
+                return await self._mock_update_position(user_id, symbol, quantity, price, trade_id, commission)
+            
             table = self._get_table(self.positions_table_name)
+            if table is None:
+                logger.warning(f"Positions table {self.positions_table_name} not available - skipping position update")
+                return True  # Don't fail the trade execution
+            
             symbol = symbol.upper()
             
-            # Get existing position
-            response = await self._execute_with_retry(
-                table.get_item,
-                Key={
-                    'pk': f"USER#{user_id}",
-                    'sk': f"SYMBOL#{symbol}"
-                }
-            )
+            # Use the correct key schema that matches the table structure
+            possible_keys = [
+                # Primary schema: user_id (partition key) and symbol (sort key)
+                {'user_id': user_id, 'symbol': symbol}
+            ]
             
-            if 'Item' in response:
+            existing_position = None
+            working_key_schema = None
+            
+            # Try to find existing position with different key schemas
+            for key_schema in possible_keys:
+                try:
+                    response = await self._execute_with_retry(
+                        table.get_item,
+                        Key=key_schema
+                    )
+                    
+                    if 'Item' in response:
+                        existing_position = response['Item']
+                        working_key_schema = key_schema
+                        logger.debug(f"Found existing position using key schema: {key_schema}")
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"Key schema {key_schema} failed: {str(e)}")
+                    continue
+            
+            # If no existing position found, use the correct key schema for new positions
+            if working_key_schema is None:
+                working_key_schema = {'user_id': user_id, 'symbol': symbol}
+            
+            if existing_position:
                 # Update existing position
-                existing_data = response['Item']
                 # Remove DynamoDB specific fields
-                for key in ['pk', 'sk', 'ttl']:
-                    existing_data.pop(key, None)
+                for key in ['pk', 'sk', 'ttl', 'user_id', 'symbol', 'position_id']:
+                    existing_position.pop(key, None)
                 
-                position = Position.from_dict(existing_data)
-                position.add_trade(trade_id, quantity, price, commission)
+                try:
+                    # Ensure required fields are present before parsing
+                    existing_position['user_id'] = user_id
+                    existing_position['symbol'] = symbol
+                    position = Position.from_dict(existing_position)
+                    position.add_trade(trade_id, quantity, price, commission)
+                except Exception as e:
+                    logger.warning(f"Failed to parse existing position, creating new one: {e}")
+                    # Create new position if parsing fails
+                    position = Position(
+                        user_id=user_id,
+                        symbol=symbol,
+                        quantity=quantity,
+                        average_cost=price,
+                        current_price=price
+                    )
+                    position.add_trade(trade_id, quantity, price, commission)
             else:
                 # Create new position
                 position = Position(
@@ -877,21 +948,25 @@ class DatabaseService:
             
             # Convert to DynamoDB item
             item = position.to_dict()
-            item['pk'] = f"USER#{user_id}"
-            item['sk'] = f"SYMBOL#{symbol}"
+            
+            # Add the appropriate key fields based on working schema
+            # Always use user_id/symbol schema for consistency with table structure
+            item['user_id'] = user_id
+            item['symbol'] = symbol
+            
             item['ttl'] = int((datetime.now(timezone.utc) + timedelta(days=2555)).timestamp())
             
             # Store updated position
             if position.is_closed():
                 # Remove closed position
-                await self._execute_with_retry(
-                    table.delete_item,
-                    Key={
-                        'pk': f"USER#{user_id}",
-                        'sk': f"SYMBOL#{symbol}"
-                    }
-                )
-                logger.info(f"Position {symbol} closed and removed for user {user_id}")
+                try:
+                    await self._execute_with_retry(
+                        table.delete_item,
+                        Key=working_key_schema
+                    )
+                    logger.info(f"Position {symbol} closed and removed for user {user_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete closed position: {e}")
             else:
                 await self._execute_with_retry(table.put_item, Item=item)
                 logger.info(f"Position {symbol} updated for user {user_id}: {position.quantity} shares")

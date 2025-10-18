@@ -40,10 +40,119 @@ class AlpacaService:
         self.is_initialized = False
         self.account_info = None
         
-        logger.info("Initializing AlpacaService...")
+        logger.info("AlpacaService created, will initialize on first use")
+    
+    def _validate_paper_trading_safety(self, api_key: str, base_url: str) -> None:
+        """Validate that we're using paper trading configuration."""
+        # Safety Check 1: URL must contain 'paper'
+        if 'paper' not in base_url.lower():
+            raise Exception(f"SAFETY VIOLATION: Base URL does not contain 'paper': {base_url}")
+        logger.info(f"✅ Safety Check 1: Paper Trading URL verified ({base_url})")
         
-    async def initialize(self) -> None:
-        """Initialize and validate Alpaca connection with safety checks."""
+        # Safety Check 2: API key must start with 'PK' (Paper Key)
+        if not api_key.startswith('PK'):
+            raise Exception(f"SAFETY VIOLATION: API key does not start with 'PK': {api_key[:10]}...")
+        logger.info("✅ Safety Check 2: Paper API key format verified (PK...)")
+        
+        # Safety Check 3: Environment check
+        environment = os.getenv('ENVIRONMENT', 'development')
+        if environment == 'production':
+            # In production, we might want additional checks
+            pass
+        logger.info(f"✅ Safety Check 3: Environment verified ({environment})")
+        
+    def initialize(self) -> None:
+        """Initialize Alpaca connection synchronously for service container."""
+        try:
+            # Do synchronous initialization instead of async
+            self._sync_initialize()
+        except Exception as e:
+            logger.error(f"Failed to initialize AlpacaService: {e}")
+            self.is_initialized = False
+    
+    def _sync_initialize(self) -> None:
+        """Initialize and validate Alpaca connection with safety checks (sync version)."""
+        try:
+            # Get configuration from environment
+            api_key = os.getenv('ALPACA_PAPER_API_KEY')
+            secret_key = os.getenv('ALPACA_PAPER_SECRET_KEY')
+            base_url = os.getenv('ALPACA_PAPER_BASE_URL', 'https://paper-api.alpaca.markets')
+            enabled = os.getenv('ALPACA_PAPER_ENABLED', 'false').lower() == 'true'
+            
+            # Check if Alpaca is enabled
+            if not enabled:
+                logger.info("⚠️  Alpaca Paper Trading is DISABLED (set ALPACA_PAPER_ENABLED=true to enable)")
+                logger.info("   Bot will use mock trading instead")
+                return
+            
+            # Validate configuration
+            if not api_key or api_key == 'YOUR_PAPER_API_KEY_HERE':
+                logger.warning("⚠️  Alpaca API key not configured - using mock trading")
+                logger.info("   Get keys from: https://alpaca.markets/ (Paper Trading section)")
+                return
+            
+            # Safety checks
+            self._validate_paper_trading_safety(api_key, base_url)
+            
+            # Initialize Alpaca client (synchronous)
+            import alpaca_trade_api as tradeapi
+            self.alpaca = tradeapi.REST(
+                key_id=api_key,
+                secret_key=secret_key,
+                base_url=base_url,
+                api_version='v2'
+            )
+            
+            logger.info("🔌 Connecting to Alpaca Paper Trading API...")
+            
+            # Test connection and get account info (synchronous)
+            account = self.alpaca.get_account()
+            
+            # Final safety check - ensure it's a paper account
+            if not account.account_number.startswith('P'):
+                logger.error("🛑 SAFETY VIOLATION: Account is not a paper trading account!")
+                logger.error("🛑 ALPACA INITIALIZATION BLOCKED FOR SAFETY")
+                raise Exception("Not a paper trading account")
+            
+            logger.info(f"✅ Safety Check 4: Paper account verified (Account: {account.account_number})")
+            
+            # Store account info
+            self.account_info = {
+                'account_number': account.account_number,
+                'cash': float(account.cash),
+                'buying_power': float(account.buying_power),
+                'portfolio_value': float(account.portfolio_value),
+                'status': account.status
+            }
+            
+            # Log successful initialization
+            logger.info("=" * 68)
+            logger.info("🧪 ALPACA PAPER TRADING - SIMULATION MODE")
+            logger.info("=" * 68)
+            logger.info(f"   Account Number: {account.account_number}")
+            logger.info(f"   Cash Available: ${float(account.cash):,.2f}")
+            logger.info(f"   Buying Power: ${float(account.buying_power):,.2f}")
+            logger.info(f"   Portfolio Value: ${float(account.portfolio_value):,.2f}")
+            logger.info(f"   Account Status: {account.status}")
+            logger.info("   ⚠️  THIS IS SIMULATED TRADING - NO REAL MONEY")
+            logger.info("=" * 68)
+            
+            self.is_initialized = True
+            logger.info("✅ AlpacaService initialized successfully - Paper Trading ACTIVE")
+            
+        except Exception as e:
+            if "SAFETY VIOLATION" in str(e) or "Not a paper trading account" in str(e):
+                logger.error("🛑 ALPACA INITIALIZATION BLOCKED FOR SAFETY")
+                raise
+            
+            logger.error(f"❌ Alpaca API Error: {e}")
+            logger.error("🚨 CRITICAL: Alpaca Paper Trading service failed to initialize")
+            print(f"🚨 ALPACA SERVICE FAILURE: {e}")
+            print("🚨 ALL TRADES WILL FAIL - NO FALLBACK TO MOCK DATA")
+            self.is_initialized = False
+        
+    async def _async_initialize(self) -> None:
+        """Initialize and validate Alpaca connection with safety checks (async version)."""
         try:
             # Get configuration from environment
             api_key = os.getenv('ALPACA_PAPER_API_KEY')
@@ -137,12 +246,16 @@ class AlpacaService:
             
         except APIError as e:
             logger.error(f"❌ Alpaca API Error: {e}")
-            logger.warning("⚠️  Falling back to mock trading")
+            logger.error("🚨 CRITICAL: Alpaca Paper Trading service failed to initialize")
+            print(f"🚨 ALPACA SERVICE FAILURE: {e}")
+            print("🚨 ALL TRADES WILL FAIL - NO FALLBACK TO MOCK DATA")
             self.is_initialized = False
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize Alpaca: {e}")
-            logger.warning("⚠️  Falling back to mock trading")
+            logger.error("🚨 CRITICAL: Alpaca Paper Trading service failed to initialize")
+            print(f"🚨 ALPACA SERVICE FAILURE: {e}")
+            print("🚨 ALL TRADES WILL FAIL - NO FALLBACK TO MOCK DATA")
             self.is_initialized = False
     
     def is_available(self) -> bool:

@@ -23,6 +23,7 @@ from services.database import DatabaseService
 from services.market_data import MarketDataService
 from services.risk_analysis import RiskAnalysisService
 from services.trading_api import TradingAPIService
+from services.alpaca_service import AlpacaService
 
 # Import configuration
 from config.settings import get_config, AppConfig
@@ -561,6 +562,14 @@ def _configure_default_services(container: ServiceContainer) -> None:
         health_check=lambda service: service.health_check() if hasattr(service, 'health_check') else True
     )
     
+    # Alpaca service (paper trading integration)
+    container.register(
+        AlpacaService,
+        startup_priority=15,
+        shutdown_priority=85,
+        health_check=lambda service: service.is_available()
+    )
+    
     # Market data service
     container.register(
         MarketDataService,
@@ -594,6 +603,31 @@ def _configure_default_services(container: ServiceContainer) -> None:
         health_check=lambda service: service.health_check() if hasattr(service, 'health_check') else True
     )
     
+    # Multi-account services
+    try:
+        from services.multi_alpaca_service import MultiAlpacaService
+        from services.user_account_manager import UserAccountManager
+        
+        container.register(
+            MultiAlpacaService,
+            startup_priority=35,
+            shutdown_priority=65,
+            health_check=lambda service: service.is_available() if hasattr(service, 'is_available') else True
+        )
+        
+        container.register(
+            UserAccountManager,
+            dependencies=[DatabaseService],
+            startup_priority=45,
+            shutdown_priority=55,
+            health_check=lambda service: True
+        )
+        
+        logger.info("Multi-account services registered successfully")
+        
+    except ImportError as e:
+        logger.warning(f"Multi-account services not available: {e}")
+    
     logger.info("Default services configured in container")
 
 
@@ -621,3 +655,20 @@ def get_risk_analysis_service() -> RiskAnalysisService:
 def get_trading_api_service() -> TradingAPIService:
     """Get the trading API service."""
     return get_container().get(TradingAPIService)
+
+
+def get_alpaca_service() -> AlpacaService:
+    """Get the Alpaca service."""
+    return get_container().get(AlpacaService)
+
+
+def get_multi_alpaca_service() -> 'MultiAlpacaService':
+    """Get the Multi-Alpaca service."""
+    from services.multi_alpaca_service import MultiAlpacaService
+    return get_container().get(MultiAlpacaService)
+
+
+def get_user_account_manager() -> 'UserAccountManager':
+    """Get the User Account Manager service."""
+    from services.user_account_manager import UserAccountManager
+    return get_container().get(UserAccountManager)

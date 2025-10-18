@@ -1435,11 +1435,39 @@ def validate_startup_requirements() -> bool:
         return False
 
 # Application entry point with validation
+def create_health_check_server():
+    """Create a simple health check server for cloud deployment"""
+    from flask import Flask
+    import threading
+    
+    health_app = Flask(__name__)
+    
+    @health_app.route('/health')
+    def health_check():
+        return {'status': 'healthy', 'service': 'slack-trading-bot'}, 200
+    
+    @health_app.route('/')
+    def root():
+        return {'message': 'Slack Trading Bot is running!', 'status': 'active'}, 200
+    
+    # Run health server in background thread
+    def run_health_server():
+        port = int(os.getenv('PORT', 8080))
+        health_app.run(host='0.0.0.0', port=port, debug=False)
+    
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    logger.info(f"Health check server started on port {os.getenv('PORT', 8080)}")
+
 if __name__ == "__main__":
     # Perform startup validation
     if not validate_startup_requirements():
         logger.error("❌ Startup validation failed")
         sys.exit(1)
+    
+    # Start health check server for cloud deployment
+    if os.getenv('ENVIRONMENT') == 'production':
+        create_health_check_server()
     
     # Start the application
     main()

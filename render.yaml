@@ -1,0 +1,27 @@
+# Render.com deployment configuration (100% FREE)
+services:
+  - type: web
+    name: slack-trading-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    plan: free  # 100% FREE tier
+    envVars:
+      - key: SLACK_BOT_TOKEN
+        sync: false  # Set this in Render dashboard
+      - key: SLACK_APP_TOKEN  
+        sync: false  # Set this in Render dashboard
+      - key: FINNHUB_API_KEY
+        sync: false  # Set this in Render dashboard
+      - key: ALPACA_API_KEY
+        sync: false  # Set this in Render dashboard
+      - key: ALPACA_SECRET_KEY
+        sync: false  # Set this in Render dashboard
+      - key: ENVIRONMENT
+        value: production
+      - key: PORT
+        value: 8080
+    # Health check endpoint
+    healthCheckPath: /health
+    # Auto-deploy from GitHub
+    autoDeploy: true

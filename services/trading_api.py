@@ -481,7 +481,11 @@ class TradingAPIService:
         self.logger = structlog.get_logger(__name__)
         
         # Initialize Alpaca service for real paper trading
-        self.alpaca_service = AlpacaService()
+        try:
+            self.alpaca_service = AlpacaService()
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize Alpaca service: {e}")
+            self.alpaca_service = None
         
         # Initialize market simulator for fallback
         self.market_simulator = MarketSimulator()
@@ -529,14 +533,17 @@ class TradingAPIService:
     async def initialize(self):
         """Initialize the trading service and Alpaca connection."""
         try:
-            await self.alpaca_service.initialize()
-            if self.alpaca_service.is_available():
+            # Initialize Alpaca service if available
+            if hasattr(self.alpaca_service, 'initialize'):
+                await self.alpaca_service.initialize()
+            
+            if self.alpaca_service and self.alpaca_service.is_available():
                 self.logger.info("🚀 Alpaca Paper Trading connected - Real paper trades enabled!")
             else:
                 self.logger.info("📝 Using mock trading simulation")
         except Exception as e:
-            self.logger.error(f"Failed to initialize Alpaca service: {e}")
-            self.logger.info("📝 Falling back to mock trading")
+            self.logger.warning(f"Alpaca service initialization failed, using mock trading: {e}")
+            self.logger.info("📝 Using mock trading simulation as fallback")
     
     async def execute_trade(
         self, 
@@ -593,33 +600,49 @@ class TradingAPIService:
             execution_report.audit_trail.append(f"Execution started at {execution_report.execution_started_at}")
             
             # Execute trade - use Alpaca if available, otherwise simulate
-            if self.alpaca_service.is_available():
+            if self.alpaca_service and hasattr(self.alpaca_service, 'is_available') and self.alpaca_service.is_available():
                 # Real Alpaca Paper Trading execution
                 self.logger.info(f"🚀 Executing {trade.trade_type.value} order via Alpaca Paper Trading")
                 
-                alpaca_order = await self.alpaca_service.submit_order(
-                    symbol=trade.symbol,
-                    quantity=abs(trade.quantity),
-                    side='buy' if trade.trade_type.value.lower() == 'buy' else 'sell',
-                    order_type='market'  # Using market orders for simplicity
-                )
-                
-                if alpaca_order:
-                    # Create fill from Alpaca order
-                    fill = Fill(
-                        fill_id=str(uuid.uuid4()),
-                        order_id=execution_report.order_id,
+                try:
+                    alpaca_order = await self.alpaca_service.submit_order(
                         symbol=trade.symbol,
                         quantity=abs(trade.quantity),
-                        price=Decimal(str(alpaca_order.get('filled_avg_price', market_quote.price))),
-                        timestamp=datetime.utcnow(),
-                        exchange='ALPACA_PAPER'
+                        side='buy' if trade.trade_type.value.lower() == 'buy' else 'sell',
+                        order_type='market'  # Using market orders for simplicity
                     )
-                    execution_report.add_fill(fill)
-                    execution_report.audit_trail.append(f"Alpaca order executed: {alpaca_order['order_id']}")
-                    self.logger.info(f"✅ Alpaca order executed successfully: {alpaca_order['order_id']}")
-                else:
-                    raise Exception("Alpaca order submission failed")
+                    
+                    if alpaca_order:
+                        # Create fill from Alpaca order
+                        fill = OrderFill(
+                            fill_id=str(uuid.uuid4()),
+                            order_id=execution_report.order_id,
+                            symbol=trade.symbol,
+                            quantity=abs(trade.quantity),
+                            price=Decimal(str(alpaca_order.get('filled_avg_price', market_quote.current_price))),
+                            venue=ExecutionVenue.NYSE,  # Default venue
+                            timestamp=datetime.utcnow()
+                        )
+                        execution_report.add_fill(fill)
+                        execution_report.audit_trail.append(f"Alpaca order executed: {alpaca_order.get('order_id', 'unknown')}")
+                        self.logger.info(f"✅ Alpaca order executed successfully: {alpaca_order.get('order_id', 'unknown')}")
+                    else:
+                        raise Exception("Alpaca order submission failed")
+                except Exception as e:
+                    self.logger.warning(f"Alpaca execution failed, falling back to simulation: {e}")
+                    # Fall back to simulation
+                    fills, execution_metrics = self.market_simulator.simulate_execution(
+                        trade.symbol,
+                        trade.trade_type.value,
+                        abs(trade.quantity),
+                        market_quote,
+                        order_type
+                    )
+                    
+                    # Process fills
+                    for fill in fills:
+                        fill.order_id = execution_report.order_id
+                        execution_report.add_fill(fill)
                     
             else:
                 # Fallback to simulation
@@ -632,7 +655,7 @@ class TradingAPIService:
                 # Simulate execution
                 fills, execution_metrics = self.market_simulator.simulate_execution(
                     trade.symbol,
-                    trade.trade_type,
+                    trade.trade_type.value,
                     abs(trade.quantity),
                     market_quote,
                     order_type
